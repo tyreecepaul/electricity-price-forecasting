@@ -1,0 +1,2 @@
+- [UNSW-CEEM/NEMOSIS git](https://github.com/UNSW-CEEM/NEMOSIS)
+- [Multi-Task Graph Adaptive Learning for Multivariate Electricity Price Short-Term Forecasting in Australia's National Electricity Market paper](https://ieeexplore.ieee.org/document/10486198)
