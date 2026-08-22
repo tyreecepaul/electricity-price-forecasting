@@ -1,5 +1,4 @@
 ## Dates
-----------
 - Proposal 5% due 5pm 14 Sep
 - Seminar 10% due week 13 (Slide submission as well)
 - Report 20%  due 5pm 9 Nov
@@ -8,7 +7,6 @@
 Contribution statement: (https://tinyurl.com/preview/deprecated/2cnwkj7q)
 
 ## Proposal
-------------
 You should use the template provided to write your proposal. The proposal should
 cover the following aspects within 2 pages:
 - Title and topic: write down the title of your project and explain the proposed problem.
@@ -21,7 +19,6 @@ The proposal will be assessed based on its clarity and conciseness, significance
 novelty.
 
 ## Seminar 
-------------
 Each group will give a talk to showcase their project. You will need to upload the
 slides for the talk, which should be either as .ppt file or a .pdf file. The length of each talk
 will be announced closer to the seminar date, but most likely will be around 10 minutes for
@@ -36,7 +33,6 @@ technical details needed for reproducibility, a lack of technical details will m
 like a show of opinions, rather than a scientific presentation.
 
 ## Report
-------------
 This is the most significant deliverable of the project.
 You should use the template provided to write your report. There is some flexibility in the
 organization of the report, but the main text of your report is expected to cover the following
@@ -62,7 +58,6 @@ For a project involving implementation, you should submit your code separately a
 on Blackboard.
 
 ## Reflective essay
----------------------
 Submit a 1 page PDF file outlining your personal reflection of your
 most significant learning from the project. Provide an account on the major issues that you
 encountered, the choices that you made, what worked, what went wrong, and what could be
