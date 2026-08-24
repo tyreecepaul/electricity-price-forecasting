@@ -10,6 +10,7 @@ TABLE = "DISPATCHPRICE"
 DEFAULT_REGIONS = ["NSW1"]
 DEFAULT_START = datetime(2024, 1, 1)
 DEFAULT_END = datetime(2024, 1, 31)
+DEFAULT_CLEAN = True
 
 TEST_FRACTION = 0.2
 
@@ -58,10 +59,17 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _split(df: pd.DataFrame, start: datetime, end: datetime, test_fraction: float = TEST_FRACTION):
+def _split(
+    df: pd.DataFrame,
+    start: datetime,
+    end: datetime,
+    test_fraction: float = TEST_FRACTION,
+    clean: bool = DEFAULT_CLEAN,
+):
+    date_col = "settlement_date" if clean else "SETTLEMENTDATE"
     cutoff = start + (end - start) * (1 - test_fraction)
-    train_df = df[df["settlement_date"] < cutoff].reset_index(drop=True)
-    test_df = df[df["settlement_date"] >= cutoff].reset_index(drop=True)
+    train_df = df[df[date_col] < cutoff].reset_index(drop=True)
+    test_df = df[df[date_col] >= cutoff].reset_index(drop=True)
     return train_df, test_df
 
 
@@ -69,9 +77,12 @@ def getTrainingData(
     regions: list[str] = DEFAULT_REGIONS,
     start: datetime = DEFAULT_START,
     end: datetime = DEFAULT_END,
+    clean: bool = DEFAULT_CLEAN,
 ) -> Data:
-    df = _clean(_ingest(regions, start, end))
-    train_df, _ = _split(df, start, end)
+    df = _ingest(regions, start, end)
+    if clean:
+        df = _clean(df)
+    train_df, _ = _split(df, start, end, clean=clean)
     return Data(train_df, regions, start, end)
 
 
@@ -79,7 +90,10 @@ def getTestData(
     regions: list[str] = DEFAULT_REGIONS,
     start: datetime = DEFAULT_START,
     end: datetime = DEFAULT_END,
+    clean: bool = DEFAULT_CLEAN,
 ) -> Data:
-    df = _clean(_ingest(regions, start, end))
-    _, test_df = _split(df, start, end)
+    df = _ingest(regions, start, end)
+    if clean:
+        df = _clean(df)
+    _, test_df = _split(df, start, end, clean=clean)
     return Data(test_df, regions, start, end)
