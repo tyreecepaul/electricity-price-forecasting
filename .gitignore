@@ -1,3 +1,5 @@
 .venv/
 notebooks/nemosis_cache/
 notebooks/nemseer_cache/
+data_cleaning/nemosis_cache/
+data_cleaning/__pycache__/
