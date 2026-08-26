@@ -8,8 +8,8 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nemosis_ca
 TABLE = "DISPATCHPRICE"
 
 DEFAULT_REGIONS = ["NSW1"]
-DEFAULT_START = datetime(2024, 1, 1)
-DEFAULT_END = datetime(2024, 1, 31)
+DEFAULT_START = datetime(2022, 1, 1)
+DEFAULT_END = datetime(2026, 1, 1)
 DEFAULT_CLEAN = True
 
 TEST_FRACTION = 0.2
