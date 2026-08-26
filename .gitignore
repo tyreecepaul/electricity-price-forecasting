@@ -3,3 +3,5 @@ notebooks/nemosis_cache/
 notebooks/nemseer_cache/
 data_cleaning/nemosis_cache/
 data_cleaning/__pycache__/
+__pycache__/
+*.py[cod]
