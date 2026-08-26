@@ -2,3 +2,6 @@ pandas
 nemosis
 matplotlib
 numpy
+scikit-learn
+xgboost
+torch
