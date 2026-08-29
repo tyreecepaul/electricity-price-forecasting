@@ -30,7 +30,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
@@ -58,7 +58,7 @@ from preprocessing import prepare_model_data
 # ============================================================
 
 TARGET_REGION = "NSW1"
-TARGET_HORIZON_MINUTES = 30
+TARGET_HORIZON_MINUTES = 60
 VALIDATION_FRACTION = 0.15
 
 # "all" uses the standard feature set from preprocessing.
@@ -74,6 +74,14 @@ MODEL_FEATURES = "all"
 
 AEMO_FORECAST_COLUMN = (
     f"p5_h{TARGET_HORIZON_MINUTES:02d}_rrp"
+)
+
+CACHE_DIR = PROJECT_ROOT / "model_cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+CACHE_FILE = CACHE_DIR / (
+    f"prepared_{TARGET_REGION}_"
+    f"{TARGET_HORIZON_MINUTES}min.joblib"
 )
 
 
@@ -163,16 +171,22 @@ def _print_improvement(
 # ============================================================
 # PREPARE SHARED TRAIN / TEST DATA
 # ============================================================
+if CACHE_FILE.exists():
+    print("Loading prepared data from cache...")
+    data = joblib.load(CACHE_FILE)
 
-data = prepare_model_data(
-    region=TARGET_REGION,
-    horizon=TARGET_HORIZON_MINUTES,
-    features=MODEL_FEATURES,
-    target="change",
-)
+else:
+    print("Preparing data...")
 
-for feature in data.features:
-    print(feature)
+    data = prepare_model_data(
+        region=TARGET_REGION,
+        horizon=TARGET_HORIZON_MINUTES,
+        features=MODEL_FEATURES,
+        target="change",
+    )
+
+    joblib.dump(data, CACHE_FILE)
+    print("Prepared data cached.")
 
 features = data.features
 train_model_df = data.train_df
