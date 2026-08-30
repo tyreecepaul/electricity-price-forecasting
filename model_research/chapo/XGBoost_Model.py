@@ -1,502 +1,744 @@
-from data_cleaning.data import getTrainingData, getTestData
+"""
+XGBoost NEM price forecasting model using the shared preprocessing API.
 
+The preprocessing package handles:
+    - loading the train/test split
+    - adapting ingestion objects
+    - joining actual AEMO tables
+    - leakage-safe P5MIN alignment
+    - feature engineering
+    - region filtering
+    - target construction
+    - default feature selection
+    - removal of completely unavailable default features
+
+This script is therefore responsible only for:
+    - chronological validation
+    - XGBoost fitting / early stopping
+    - final refit
+    - evaluation and diagnostics
+
+Target:
+    future_RRP - current_RRP
+
+Forecast:
+    current_RRP + predicted_change
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+import joblib
+import numpy as np
 import pandas as pd
-from xgboost import XGBRegressor
 from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
     median_absolute_error,
 )
+from xgboost import XGBRegressor
 
 
 # ============================================================
-# LOAD TRAINING AND TEST DATA
+# PROJECT IMPORTS
 # ============================================================
 
-train_data = getTrainingData()
-test_data = getTestData()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-train_df = train_data.df.copy()
-test_df = test_data.df.copy()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from preprocessing import prepare_model_data
 
 
-print("Training data:")
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+TARGET_REGION = "NSW1"
+TARGET_HORIZON_MINUTES = 60
+VALIDATION_FRACTION = 0.15
+
+# "all" uses the standard feature set from preprocessing.
+# You can instead provide an explicit list, e.g.
+#
+# MODEL_FEATURES = [
+#     "rrp",
+#     "rrp_delta_1",
+#     "reserve_ratio",
+#     "p5_h60_rrp_vs_now",
+# ]
+MODEL_FEATURES = "all"
+
+AEMO_FORECAST_COLUMN = (
+    f"p5_h{TARGET_HORIZON_MINUTES:02d}_rrp"
+)
+
+CACHE_DIR = PROJECT_ROOT / "model_cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+CACHE_FILE = CACHE_DIR / (
+    f"prepared_{TARGET_REGION}_"
+    f"{TARGET_HORIZON_MINUTES}min.joblib"
+)
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
+def _rmse(actual, predicted) -> float:
+    return float(
+        mean_squared_error(
+            actual,
+            predicted,
+        ) ** 0.5
+    )
+
+
+def _metrics(actual, predicted) -> dict[str, float]:
+    return {
+        "mae": float(
+            mean_absolute_error(
+                actual,
+                predicted,
+            )
+        ),
+        "rmse": _rmse(
+            actual,
+            predicted,
+        ),
+        "median_ae": float(
+            median_absolute_error(
+                actual,
+                predicted,
+            )
+        ),
+    }
+
+
+def _print_metrics(
+    title: str,
+    actual,
+    forecasts: dict[str, np.ndarray],
+) -> dict[str, dict[str, float]]:
+    print(f"\n{title}")
+    print("-" * len(title))
+
+    values = {
+        name: _metrics(actual, pred)
+        for name, pred in forecasts.items()
+    }
+
+    print("\nMAE")
+    for name, metric in values.items():
+        print(f"{name:<16} {metric['mae']:.2f}")
+
+    print("\nRMSE")
+    for name, metric in values.items():
+        print(f"{name:<16} {metric['rmse']:.2f}")
+
+    print("\nMedian AE")
+    for name, metric in values.items():
+        print(f"{name:<16} {metric['median_ae']:.2f}")
+
+    return values
+
+
+def _print_improvement(
+    model_name: str,
+    model_mae: float,
+    baseline_name: str,
+    baseline_mae: float,
+) -> None:
+    if baseline_mae == 0:
+        return
+
+    improvement = (
+        (baseline_mae - model_mae)
+        / baseline_mae
+        * 100.0
+    )
+
+    print(
+        f"{model_name} MAE improvement over "
+        f"{baseline_name}: {improvement:.2f}%"
+    )
+
+
+# ============================================================
+# PREPARE SHARED TRAIN / TEST DATA
+# ============================================================
+if CACHE_FILE.exists():
+    print("Loading prepared data from cache...")
+    data = joblib.load(CACHE_FILE)
+
+else:
+    print("Preparing data...")
+
+    data = prepare_model_data(
+        region=TARGET_REGION,
+        horizon=TARGET_HORIZON_MINUTES,
+        features=MODEL_FEATURES,
+        target="change",
+    )
+
+    joblib.dump(data, CACHE_FILE)
+    print("Prepared data cached.")
+
+features = data.features
+train_model_df = data.train_df
+test_model_df = data.test_df
+
+print("\nPREPARED MODEL DATA")
+print("-------------------")
+print("Target region:", data.region)
 print(
-    train_df["settlement_date"].min(),
-    "->",
-    train_df["settlement_date"].max()
+    "Forecast horizon:",
+    data.horizon,
+    "minutes",
 )
-
-print("Test data:")
+print("Target type:", data.target_type)
+print("Training rows:", len(train_model_df))
+print("Test rows:", len(test_model_df))
+print("Features:", len(features))
 print(
-    test_df["settlement_date"].min(),
+    "P5MIN features:",
+    sum(
+        column.startswith("p5_h")
+        for column in features
+    ),
+)
+print(
+    "Interconnector features:",
+    sum(
+        column.startswith("ic_")
+        for column in features
+    ),
+)
+
+print(
+    "Training period:",
+    train_model_df["settlement_date"].min(),
     "->",
-    test_df["settlement_date"].max()
+    train_model_df["settlement_date"].max(),
 )
 
-print("Training rows:", len(train_df))
-print("Test rows:", len(test_df))
+print(
+    "Test period:",
+    test_model_df["settlement_date"].min(),
+    "->",
+    test_model_df["settlement_date"].max(),
+)
 
 
 # ============================================================
-# MARK TRAIN / TEST BEFORE COMBINING
+# AEMO FORECAST AVAILABILITY
 # ============================================================
 
-train_df["dataset"] = "train"
-test_df["dataset"] = "test"
+print("\nAEMO FORECAST AVAILABILITY")
+print("--------------------------")
 
-# Combine temporarily so test lag features can use
-# price history from the end of the training set.
-df = pd.concat(
-    [train_df, test_df],
-    ignore_index=True
-)
-
-df["settlement_date"] = pd.to_datetime(
-    df["settlement_date"]
-)
-
-df = (
-    df.sort_values(
-        ["region", "settlement_date"]
+if AEMO_FORECAST_COLUMN in train_model_df.columns:
+    print(
+        f"Valid training {AEMO_FORECAST_COLUMN}:",
+        train_model_df[
+            AEMO_FORECAST_COLUMN
+        ].notna().sum(),
     )
-    .reset_index(drop=True)
-)
-
-
-# ============================================================
-# PRICE LAG FEATURES
-# ============================================================
-
-grouped_price = df.groupby("region")["rrp"]
-
-
-df["rrp_lag_1"] = grouped_price.shift(1)      # 5 min ago
-
-df["rrp_lag_2"] = grouped_price.shift(2)      # 10 min ago
-
-df["rrp_lag_3"] = grouped_price.shift(3)      # 15 min ago
-
-df["rrp_lag_6"] = grouped_price.shift(6)      # 30 min ago
-
-df["rrp_lag_12"] = grouped_price.shift(12)    # 1 hour ago
-
-
-# ============================================================
-# PRICE CHANGE FEATURES
-# ============================================================
-
-df["rrp_change_1"] = grouped_price.diff(1)
-
-df["rrp_change_3"] = grouped_price.diff(3)
-
-df["rrp_change_12"] = grouped_price.diff(12)
-
-
-# ============================================================
-# ROLLING PRICE FEATURES
-# ============================================================
-
-df["rrp_mean_12"] = (
-    df.groupby("region")["rrp"]
-    .transform(
-        lambda x: x.rolling(12).mean()
+else:
+    print(
+        f"{AEMO_FORECAST_COLUMN} is not present "
+        "in the training frame."
     )
-)
 
-df["rrp_std_12"] = (
-    df.groupby("region")["rrp"]
-    .transform(
-        lambda x: x.rolling(12).std()
+if AEMO_FORECAST_COLUMN in test_model_df.columns:
+    print(
+        f"Valid test {AEMO_FORECAST_COLUMN}:",
+        test_model_df[
+            AEMO_FORECAST_COLUMN
+        ].notna().sum(),
     )
-)
-
-df["rrp_min_12"] = (
-    df.groupby("region")["rrp"]
-    .transform(
-        lambda x: x.rolling(12).min()
+else:
+    print(
+        f"{AEMO_FORECAST_COLUMN} is not present "
+        "in the test frame."
     )
-)
 
-df["rrp_max_12"] = (
-    df.groupby("region")["rrp"]
-    .transform(
-        lambda x: x.rolling(12).max()
+
+# ============================================================
+# CHRONOLOGICAL VALIDATION SPLIT
+# ============================================================
+
+if not 0 < VALIDATION_FRACTION < 1:
+    raise ValueError(
+        "VALIDATION_FRACTION must be between 0 and 1."
     )
+
+split_index = int(
+    len(train_model_df)
+    * (1 - VALIDATION_FRACTION)
 )
 
+if split_index <= 0 or split_index >= len(train_model_df):
+    raise RuntimeError(
+        "Validation split produced an empty subset."
+    )
 
-# ============================================================
-# PRICE REGIME FEATURES
-# ============================================================
+validation_start = train_model_df.iloc[
+    split_index
+]["settlement_date"]
 
-df["price_above_300"] = (
-    df["rrp"] > 300
-).astype(int)
-
-df["price_above_1000"] = (
-    df["rrp"] > 1000
-).astype(int)
-
-df["price_below_0"] = (
-    df["rrp"] < 0
-).astype(int)
-
-
-# ============================================================
-# TIME FEATURES
-# ============================================================
-
-df["hour"] = (
-    df["settlement_date"].dt.hour
+target_delta = pd.Timedelta(
+    minutes=TARGET_HORIZON_MINUTES
 )
 
-df["minute"] = (
-    df["settlement_date"].dt.minute
-)
-
-df["day_of_week"] = (
-    df["settlement_date"].dt.dayofweek
-)
-
-
-# ============================================================
-# TARGET
-# ============================================================
-#
-# We predict:
-#
-#     next price - current price
-#
-# rather than directly predicting next price.
-#
-# ============================================================
-
-df["next_rrp"] = (
-    df.groupby("region")["rrp"]
-    .shift(-1)
-)
-
-df["target"] = (
-    df["next_rrp"] - df["rrp"]
-)
-
-
-# ============================================================
-# PREVENT TRAIN/TEST TARGET CROSSOVER
-# ============================================================
-#
-# Important:
-#
-# The final training row should NOT use the first test price
-# as its target.
-#
-# Similarly, the final test row has no next price.
-#
-# ============================================================
-
-df["next_dataset"] = (
-    df.groupby("region")["dataset"]
-    .shift(-1)
-)
-
-
-# ============================================================
-# FEATURES USED BY XGBOOST
-# ============================================================
-
-features = [
-
-    # Current price
-    "rrp",
-
-    # Price lags
-    "rrp_lag_1",
-    "rrp_lag_2",
-    "rrp_lag_3",
-    "rrp_lag_6",
-    "rrp_lag_12",
-
-    # Price changes
-    "rrp_change_1",
-    "rrp_change_3",
-    "rrp_change_12",
-
-    # Rolling price statistics
-    "rrp_mean_12",
-    "rrp_std_12",
-    "rrp_min_12",
-    "rrp_max_12",
-
-    # Current-price regimes
-    "price_above_300",
-    "price_above_1000",
-    "price_below_0",
-
-    # Time
-    "hour",
-    "minute",
-    "day_of_week",
-]
-
-
-# ============================================================
-# REMOVE INVALID ROWS
-# ============================================================
-
-required_columns = (
-    features
-    + ["target", "next_rrp"]
-)
-
-df = df.dropna(
-    subset=required_columns
-).copy()
-
-
-# ============================================================
-# SPLIT BACK INTO TRAIN AND TEST
-# ============================================================
-#
-# Only allow targets that stay within the same dataset.
-#
-# ============================================================
-
-model_train_df = df[
-    (df["dataset"] == "train")
-    & (df["next_dataset"] == "train")
+# Purge rows whose prediction target lands inside the
+# validation period.
+fit_model_df = train_model_df[
+    (
+        train_model_df["settlement_date"]
+        + target_delta
+    )
+    < validation_start
 ].copy()
 
-
-model_test_df = df[
-    (df["dataset"] == "test")
-    & (df["next_dataset"] == "test")
+validation_model_df = train_model_df[
+    train_model_df["settlement_date"]
+    >= validation_start
 ].copy()
 
+if fit_model_df.empty or validation_model_df.empty:
+    raise RuntimeError(
+        "Chronological validation split produced "
+        "an empty subset."
+    )
 
-print("\nAfter feature engineering:")
+X_fit = fit_model_df[features]
+y_fit = fit_model_df["target"]
 
+X_val = validation_model_df[features]
+y_val = validation_model_df["target"]
+
+actual_val = validation_model_df[
+    "target_rrp"
+].to_numpy()
+
+current_val = validation_model_df[
+    "rrp"
+].to_numpy()
+
+print("\nCHRONOLOGICAL VALIDATION")
+print("------------------------")
 print(
-    "Training rows:",
-    len(model_train_df)
-)
-
-print(
-    "Test rows:",
-    len(model_test_df)
-)
-
-print(
-    "\nModel training dates:",
-    model_train_df["settlement_date"].min(),
+    "Fit:",
+    fit_model_df["settlement_date"].min(),
     "->",
-    model_train_df["settlement_date"].max()
+    fit_model_df["settlement_date"].max(),
 )
-
 print(
-    "Model test dates:",
-    model_test_df["settlement_date"].min(),
+    "Validation:",
+    validation_model_df["settlement_date"].min(),
     "->",
-    model_test_df["settlement_date"].max()
+    validation_model_df["settlement_date"].max(),
 )
+print("Fit rows:", len(fit_model_df))
+print("Validation rows:", len(validation_model_df))
 
 
 # ============================================================
-# CREATE X AND Y
+# MODEL SELECTION WITH EARLY STOPPING
 # ============================================================
 
-X_train = model_train_df[features]
-
-y_train = model_train_df["target"]
-
-
-X_test = model_test_df[features]
-
-y_test = model_test_df["target"]
-
-
-# Actual next electricity price
-actual_test = model_test_df["next_rrp"]
-
-
-# ============================================================
-# XGBOOST MODEL
-# ============================================================
-
-model = XGBRegressor(
-    n_estimators=200,
-    max_depth=3,
+selection_model = XGBRegressor(
+    n_estimators=2000,
+    max_depth=4,
     learning_rate=0.03,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    min_child_weight=5,
-    reg_lambda=5,
-    objective="reg:squarederror",
+    subsample=0.85,
+    colsample_bytree=0.85,
+    min_child_weight=8,
+    reg_alpha=0.1,
+    reg_lambda=8.0,
+    objective="reg:absoluteerror",
+    eval_metric="mae",
+    tree_method="hist",
+    max_bin=256,
+    n_jobs=-1,
+    early_stopping_rounds=100,
     random_state=42,
 )
 
+print(
+    "\nStarting model-selection XGBoost training..."
+)
 
-model.fit(
-    X_train,
-    y_train
+start_time = time.perf_counter()
+
+selection_model.fit(
+    X_fit,
+    y_fit,
+    eval_set=[
+        (
+            X_val,
+            y_val,
+        )
+    ],
+    verbose=50,
+)
+
+selection_seconds = (
+    time.perf_counter()
+    - start_time
+)
+
+best_iteration = int(
+    selection_model.best_iteration
+)
+
+best_n_estimators = (
+    best_iteration
+    + 1
+)
+
+print(
+    "\nModel-selection training finished in "
+    f"{selection_seconds:.1f} seconds"
+)
+print(
+    "Best boosting iteration:",
+    best_iteration,
+)
+print(
+    "Trees used in final model:",
+    best_n_estimators,
 )
 
 
 # ============================================================
-# XGBOOST PREDICTIONS
-# ============================================================
-#
-# Model predicts the CHANGE in price.
-#
+# VALIDATION RESULTS
 # ============================================================
 
-predicted_change = model.predict(
-    X_test
+validation_predicted_change = (
+    selection_model.predict(
+        X_val
+    )
+)
+
+validation_predictions = (
+    current_val
+    + validation_predicted_change
+)
+
+persistence_val = current_val
+
+validation_metrics = _print_metrics(
+    title="VALIDATION RESULTS",
+    actual=actual_val,
+    forecasts={
+        "XGBoost":
+            validation_predictions,
+        "Persistence":
+            persistence_val,
+    },
+)
+
+_print_improvement(
+    "XGBoost",
+    validation_metrics["XGBoost"]["mae"],
+    "Persistence",
+    validation_metrics["Persistence"]["mae"],
 )
 
 
-# Convert predicted change back to price:
-#
-# predicted next price =
-# current price + predicted change
+# ============================================================
+# OPTIONAL VALIDATION AEMO BASELINE
+# ============================================================
+
+if AEMO_FORECAST_COLUMN in validation_model_df.columns:
+    validation_aemo_mask = (
+        validation_model_df[
+            AEMO_FORECAST_COLUMN
+        ].notna()
+    )
+
+    if validation_aemo_mask.any():
+        validation_aemo_actual = (
+            validation_model_df.loc[
+                validation_aemo_mask,
+                "target_rrp",
+            ].to_numpy()
+        )
+
+        validation_aemo_predictions = (
+            validation_model_df.loc[
+                validation_aemo_mask,
+                AEMO_FORECAST_COLUMN,
+            ].to_numpy()
+        )
+
+        validation_xgb_on_aemo_rows = (
+            validation_predictions[
+                validation_aemo_mask.to_numpy()
+            ]
+        )
+
+        validation_aemo_metrics = _print_metrics(
+            title="VALIDATION: PAIRED XGBOOST VS AEMO",
+            actual=validation_aemo_actual,
+            forecasts={
+                "XGBoost":
+                    validation_xgb_on_aemo_rows,
+                "AEMO P5MIN":
+                    validation_aemo_predictions,
+            },
+        )
+
+        _print_improvement(
+            "XGBoost",
+            validation_aemo_metrics[
+                "XGBoost"
+            ]["mae"],
+            "AEMO P5MIN",
+            validation_aemo_metrics[
+                "AEMO P5MIN"
+            ]["mae"],
+        )
+    else:
+        print(
+            f"\nNo usable validation "
+            f"{AEMO_FORECAST_COLUMN} forecasts available."
+        )
+
+
+# ============================================================
+# REFIT ON ALL PRE-TEST TRAINING DATA
+# ============================================================
+
+final_model = XGBRegressor(
+    n_estimators=best_n_estimators,
+    max_depth=4,
+    learning_rate=0.03,
+    subsample=0.85,
+    colsample_bytree=0.85,
+    min_child_weight=8,
+    reg_alpha=0.1,
+    reg_lambda=8.0,
+    objective="reg:absoluteerror",
+    eval_metric="mae",
+    tree_method="hist",
+    max_bin=256,
+    n_jobs=-1,
+    random_state=42,
+)
+
+print(
+    "\nRefitting final XGBoost on all pre-test "
+    "training data..."
+)
+
+start_time = time.perf_counter()
+
+final_model.fit(
+    data.X_train,
+    data.y_train,
+    verbose=False,
+)
+
+refit_seconds = (
+    time.perf_counter()
+    - start_time
+)
+
+print(
+    "Final refit finished in "
+    f"{refit_seconds:.1f} seconds"
+)
+
+
+# ============================================================
+# FINAL TEST FORECASTS
+# ============================================================
+
+actual_test = test_model_df[
+    "target_rrp"
+].to_numpy()
+
+current_test = test_model_df[
+    "rrp"
+].to_numpy()
+
+predicted_change = final_model.predict(
+    data.X_test
+)
 
 predictions = (
-    X_test["rrp"].to_numpy()
+    current_test
     + predicted_change
 )
 
+baseline_predictions = current_test
 
-# ============================================================
-# PERSISTENCE BASELINE
-# ============================================================
-#
-# Baseline simply predicts:
-#
-#     next price = current price
-#
-# ============================================================
-
-baseline_predictions = (
-    X_test["rrp"].to_numpy()
+actual_change = (
+    actual_test
+    - current_test
 )
 
 
 # ============================================================
-# OVERALL METRICS
+# FINAL TEST RESULTS
 # ============================================================
 
-xgb_mae = mean_absolute_error(
-    actual_test,
-    predictions
+test_metrics = _print_metrics(
+    title="FINAL TEST RESULTS",
+    actual=actual_test,
+    forecasts={
+        "XGBoost":
+            predictions,
+        "Persistence":
+            baseline_predictions,
+    },
 )
 
-xgb_rmse = (
-    mean_squared_error(
-        actual_test,
-        predictions
-    ) ** 0.5
+_print_improvement(
+    "XGBoost",
+    test_metrics["XGBoost"]["mae"],
+    "Persistence",
+    test_metrics["Persistence"]["mae"],
 )
 
-xgb_median_ae = (
-    median_absolute_error(
-        actual_test,
-        predictions
+
+# ============================================================
+# OPTIONAL PAIRED AEMO TEST COMPARISON
+# ============================================================
+
+aemo_predictions_full = np.full(
+    len(test_model_df),
+    np.nan,
+)
+
+if AEMO_FORECAST_COLUMN in test_model_df.columns:
+    aemo_mask = (
+        test_model_df[
+            AEMO_FORECAST_COLUMN
+        ].notna()
     )
-)
 
+    if aemo_mask.any():
+        aemo_actual = (
+            test_model_df.loc[
+                aemo_mask,
+                "target_rrp",
+            ].to_numpy()
+        )
 
-baseline_mae = mean_absolute_error(
-    actual_test,
-    baseline_predictions
-)
+        aemo_predictions = (
+            test_model_df.loc[
+                aemo_mask,
+                AEMO_FORECAST_COLUMN,
+            ].to_numpy()
+        )
 
-baseline_rmse = (
-    mean_squared_error(
-        actual_test,
-        baseline_predictions
-    ) ** 0.5
-)
+        xgb_on_aemo_rows = (
+            predictions[
+                aemo_mask.to_numpy()
+            ]
+        )
 
-baseline_median_ae = (
-    median_absolute_error(
-        actual_test,
-        baseline_predictions
-    )
-)
+        persistence_on_aemo_rows = (
+            baseline_predictions[
+                aemo_mask.to_numpy()
+            ]
+        )
 
+        aemo_predictions_full[
+            aemo_mask.to_numpy()
+        ] = aemo_predictions
 
-print("\nOVERALL RESULTS")
-print("-------------------------")
+        paired_metrics = _print_metrics(
+            title="FINAL TEST: PAIRED XGBOOST VS AEMO",
+            actual=aemo_actual,
+            forecasts={
+                "XGBoost":
+                    xgb_on_aemo_rows,
+                "Persistence":
+                    persistence_on_aemo_rows,
+                "AEMO P5MIN":
+                    aemo_predictions,
+            },
+        )
 
-print(
-    f"XGBoost MAE:        "
-    f"{xgb_mae:.2f}"
-)
+        _print_improvement(
+            "XGBoost",
+            paired_metrics["XGBoost"]["mae"],
+            "AEMO P5MIN",
+            paired_metrics["AEMO P5MIN"]["mae"],
+        )
 
-print(
-    f"Baseline MAE:       "
-    f"{baseline_mae:.2f}"
-)
-
-print()
-
-print(
-    f"XGBoost RMSE:       "
-    f"{xgb_rmse:.2f}"
-)
-
-print(
-    f"Baseline RMSE:      "
-    f"{baseline_rmse:.2f}"
-)
-
-print()
-
-print(
-    f"XGBoost Median AE:  "
-    f"{xgb_median_ae:.2f}"
-)
-
-print(
-    f"Baseline Median AE: "
-    f"{baseline_median_ae:.2f}"
-)
+    else:
+        print(
+            f"\nNo usable test "
+            f"{AEMO_FORECAST_COLUMN} forecasts available."
+        )
 
 
 # ============================================================
 # RESULTS DATAFRAME
 # ============================================================
 
-results = pd.DataFrame({
+results = pd.DataFrame(
+    {
+        "settlement_date":
+            test_model_df[
+                "settlement_date"
+            ].values,
 
-    "settlement_date":
-        model_test_df["settlement_date"].values,
+        "region":
+            test_model_df[
+                "region"
+            ].values,
 
-    "current":
-        X_test["rrp"].to_numpy(),
+        "current":
+            current_test,
 
-    "actual":
-        actual_test.to_numpy(),
+        "actual":
+            actual_test,
 
-    "predicted_change":
-        predicted_change,
+        "actual_change":
+            actual_change,
 
-    "predicted":
-        predictions,
+        "predicted_change":
+            predicted_change,
 
-    "baseline":
-        baseline_predictions,
-})
+        "predicted":
+            predictions,
 
+        "baseline":
+            baseline_predictions,
 
-results["xgb_error"] = abs(
+        "aemo_p5min":
+            aemo_predictions_full,
+    }
+)
+
+results["xgb_error"] = np.abs(
     results["actual"]
     - results["predicted"]
 )
 
-results["baseline_error"] = abs(
+results["baseline_error"] = np.abs(
     results["actual"]
     - results["baseline"]
+)
+
+results["aemo_error"] = np.where(
+    results["aemo_p5min"].notna(),
+    np.abs(
+        results["actual"]
+        - results["aemo_p5min"]
+    ),
+    np.nan,
 )
 
 
@@ -505,24 +747,30 @@ results["baseline_error"] = abs(
 # ============================================================
 
 print("\nFIRST 20 PREDICTIONS")
-print("-------------------------")
+print("--------------------")
 
-pd.set_option("display.max_columns", None)
+pd.set_option(
+    "display.max_columns",
+    None,
+)
 
-print(results.head(20))
+print(
+    results.head(20)
+)
+
 
 # ============================================================
 # LARGEST XGBOOST ERRORS
 # ============================================================
 
 print("\nLARGEST XGBOOST ERRORS")
-print("-------------------------")
+print("----------------------")
 
 print(
     results
     .sort_values(
         "xgb_error",
-        ascending=False
+        ascending=False,
     )
     .head(20)
 )
@@ -533,95 +781,133 @@ print(
 # ============================================================
 
 bands = [
-
     (
         "Normal (< $300)",
-        results["actual"] < 300
+        results["actual"] < 300,
     ),
-
     (
         "High ($300-$1000)",
         (
             (results["actual"] >= 300)
             & (results["actual"] < 1000)
-        )
+        ),
     ),
-
     (
         "Spike (> $1000)",
-        results["actual"] >= 1000
+        results["actual"] >= 1000,
     ),
 ]
 
-
 print("\nRESULTS BY PRICE REGIME")
-print("-------------------------")
-
+print("-----------------------")
 
 for name, mask in bands:
+    subset = results[
+        mask
+    ]
 
-    subset = results[mask]
-
-    if len(subset) == 0:
+    if subset.empty:
         continue
 
-    regime_xgb_mae = (
-        mean_absolute_error(
-            subset["actual"],
-            subset["predicted"]
-        )
-    )
-
-    regime_baseline_mae = (
-        mean_absolute_error(
-            subset["actual"],
-            subset["baseline"]
-        )
-    )
-
     print(f"\n{name}")
-
     print(
-        f"Observations: "
-        f"{len(subset)}"
+        "Observations:",
+        len(subset),
+    )
+
+    xgb_mae = mean_absolute_error(
+        subset["actual"],
+        subset["predicted"],
+    )
+
+    baseline_mae = mean_absolute_error(
+        subset["actual"],
+        subset["baseline"],
     )
 
     print(
-        f"XGBoost MAE:  "
-        f"${regime_xgb_mae:.2f}"
+        f"{'XGBoost':<12} "
+        f"${xgb_mae:.2f}"
     )
 
     print(
-        f"Baseline MAE: "
-        f"${regime_baseline_mae:.2f}"
+        f"{'Persistence':<12} "
+        f"${baseline_mae:.2f}"
     )
+
+    aemo_subset = subset.dropna(
+        subset=["aemo_p5min"]
+    )
+
+    if not aemo_subset.empty:
+        aemo_mae = mean_absolute_error(
+            aemo_subset["actual"],
+            aemo_subset["aemo_p5min"],
+        )
+
+        print(
+            f"{'AEMO P5MIN':<12} "
+            f"${aemo_mae:.2f}"
+        )
+
+
+# ============================================================
+# PRICE CHANGE DIAGNOSTICS
+# ============================================================
+
+print("\nPRICE CHANGE DIAGNOSTICS")
+print("------------------------")
+
+diagnostics = pd.DataFrame(
+    {
+        "actual_change":
+            actual_change,
+
+        "predicted_change":
+            predicted_change,
+    }
+)
+
+print(
+    diagnostics.describe(
+        percentiles=[
+            0.01,
+            0.05,
+            0.25,
+            0.50,
+            0.75,
+            0.95,
+            0.99,
+        ]
+    )
+)
 
 
 # ============================================================
 # FEATURE IMPORTANCE
 # ============================================================
 
-importance = pd.DataFrame({
-
-    "feature":
-        features,
-
-    "importance":
-        model.feature_importances_,
-})
-
-
 importance = (
-    importance
+    pd.DataFrame(
+        {
+            "feature":
+                features,
+
+            "importance":
+                final_model.feature_importances_,
+        }
+    )
     .sort_values(
         "importance",
-        ascending=False
+        ascending=False,
+    )
+    .reset_index(
+        drop=True
     )
 )
 
-
 print("\nFEATURE IMPORTANCE")
-print("-------------------------")
+print("------------------")
 
 print(
     importance.to_string(

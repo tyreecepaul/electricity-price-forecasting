@@ -2,6 +2,17 @@
 notebooks/nemosis_cache/
 notebooks/nemseer_cache/
 data_cleaning/nemosis_cache/
+data_cleaning/nemseer_cache/
 data_cleaning/__pycache__/
 __pycache__/
+**/__pycache__/
 *.py[cod]
+
+*.joblib
+
+.vscode/
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.nc

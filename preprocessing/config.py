@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FeatureConfig:
+    """Configuration for essential NEM price-prediction features.
+
+    All lag/window values are in 5-minute intervals by default. The defaults are
+    intentionally compact: they capture immediate dynamics, intra-hour behaviour,
+    and the same time on the previous day without exploding feature count.
+    """
+
+    interval_minutes: int = 5
+
+    # Forecast target. Additional target horizons can be added later without
+    # changing the feature engineering code.
+    target_horizons_minutes: tuple[int, ...] = (5,)
+
+    # Historical signal.
+    price_lags: tuple[int, ...] = (1, 2, 3, 6, 12, 36, 288)
+    demand_lags: tuple[int, ...] = (1, 3, 6, 12, 288)
+    delta_intervals: tuple[int, ...] = (1, 3, 6, 12)
+    rolling_windows: tuple[int, ...] = (6, 12, 36, 288)
+
+    # AEMO P5MIN future trajectory to expose as known-future covariates.
+    p5min_horizons_minutes: tuple[int, ...] = (5, 10, 15, 30, 60)
+
+    include_calendar: bool = True
+    include_interconnector_utilisation: bool = True
+
+    # Optional clipping is deliberately disabled by default. Extreme prices are
+    # important observations in the NEM and should not be silently removed.
+    clip_infinite_ratios: bool = True
+
+    @property
+    def max_history_intervals(self) -> int:
+        values = [1, *self.price_lags, *self.demand_lags, *self.rolling_windows]
+        return max(values)
+
+    @property
+    def max_history_minutes(self) -> int:
+        return self.max_history_intervals * self.interval_minutes
