@@ -24,7 +24,8 @@ class PreparedModelData:
         Selected model input columns.
 
     y_train, y_test:
-        Selected target. By default this is future price change in $/MWh.
+        Selected target. By default this is future price change in $/MWh;
+        ``price`` targets contain the direct future RRP.
         ``aemo_error`` targets contain actual future RRP minus the aligned AEMO
         P5MIN dispatch-price forecast at the requested horizon.
 
