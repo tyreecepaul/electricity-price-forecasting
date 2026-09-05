@@ -71,7 +71,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 
 # ---------------------------------------------------------
-# Convert data to tensors
+# Fit leakage-safe preprocessing and build model-selection tensors
 # ---------------------------------------------------------
 
 fit_df = complete_case_rows(fit_df, features)
@@ -112,7 +112,7 @@ y_test = torch.tensor(
 
 
 # ---------------------------------------------------------
-# DataLoader
+# Model-selection data loaders
 # ---------------------------------------------------------
 
 train_dataset = TensorDataset(X_train, y_train)
@@ -134,7 +134,7 @@ validation_loader = DataLoader(
 
 
 # ---------------------------------------------------------
-# Model
+# Regularized MLP architecture
 # ---------------------------------------------------------
 
 class NeuralNetwork(nn.Module):
@@ -170,7 +170,7 @@ print(model)
 
 
 # ---------------------------------------------------------
-# Loss + optimizer
+# Robust objective, regularized optimizer, and plateau scheduler
 # ---------------------------------------------------------
 
 criterion = nn.HuberLoss(delta=1.0)
@@ -224,7 +224,7 @@ def evaluate_validation():
 
 
 # ---------------------------------------------------------
-# Training
+# Select the epoch count using chronological validation
 # ---------------------------------------------------------
 
 num_epochs = 50
@@ -308,7 +308,7 @@ print(
 
 
 # ---------------------------------------------------------
-# Best-model validation comparison
+# Report model-selection validation results
 # ---------------------------------------------------------
 
 validation_predictions = reconstruct_price_forecast(
@@ -346,7 +346,7 @@ evaluate_aemo_rows(
 
 
 # ---------------------------------------------------------
-# Refit on all pre-test observations
+# Refit a fresh model on all pre-test observations
 # ---------------------------------------------------------
 
 final_train_df = complete_case_rows(data.train_df, features)
@@ -429,7 +429,7 @@ for epoch in range(best_epoch):
 
 
 # ---------------------------------------------------------
-# Evaluate final model on the untouched test period
+# Evaluate the final model once on the untouched test period
 # ---------------------------------------------------------
 
 final_model.eval()

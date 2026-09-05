@@ -29,7 +29,7 @@ from model_research.common.experiment_pipeline import (
 )
 
 
-# Experiment configuration shared with any future model implementation
+# Match these values to the MLP configuration before a fair comparison
 
 EXPERIMENT = ExperimentConfig(
     region="NSW1",
@@ -40,7 +40,7 @@ EXPERIMENT = ExperimentConfig(
 )
 
 
-# XGBoost specification
+# Regularized XGBoost specification
 
 XGBOOST_PARAMETERS = {
     "max_depth": 4,
@@ -59,7 +59,7 @@ XGBOOST_PARAMETERS = {
 }
 
 
-# Shared data preparation and chronological validation
+# Shared preparation, complete-case rows, and chronological validation
 
 experiment = prepare_experiment(EXPERIMENT)
 data = experiment.prepared
@@ -87,7 +87,7 @@ X_validation = validation_df[features]
 y_validation = validation_df["target"]
 
 
-# Select the number of boosting rounds by early stopping
+# Select the number of boosting rounds with validation early stopping
 
 selection_model = XGBRegressor(
     n_estimators=2000,
@@ -113,7 +113,7 @@ print("Best boosting iteration:", best_iteration)
 print("Trees used in final model:", best_n_estimators)
 
 
-# Evaluate model-selection forecasts
+# Report model-selection validation results
 
 validation_predicted_target = selection_model.predict(X_validation)
 validation_predictions = reconstruct_price_forecast(
@@ -148,7 +148,7 @@ evaluate_aemo_rows(
 )
 
 
-# Refit the selected specification on all pre-test observations
+# Refit the selected specification on all complete pre-test observations
 
 final_model = XGBRegressor(
     n_estimators=best_n_estimators,
@@ -166,7 +166,7 @@ refit_seconds = time.perf_counter() - start_time
 print(f"Final refit finished in {refit_seconds:.1f} seconds")
 
 
-# Evaluate final test forecasts
+# Evaluate the final model once on the untouched test period
 
 predicted_target = final_model.predict(final_test_df[features])
 predictions = reconstruct_price_forecast(
@@ -201,7 +201,7 @@ evaluate_aemo_rows(
 )
 
 
-# Interval-level and regime diagnostics
+# Comparable price-regime and target diagnostics
 
 results = build_results_frame(
     final_test_df,
