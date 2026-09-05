@@ -25,6 +25,8 @@ class PreparedModelData:
 
     y_train, y_test:
         Selected target. By default this is future price change in $/MWh.
+        ``aemo_error`` targets contain actual future RRP minus the aligned AEMO
+        P5MIN dispatch-price forecast at the requested horizon.
 
     train_df, test_df:
         Full prepared rows, including ``settlement_date``, ``region``, ``rrp``,
@@ -86,7 +88,7 @@ def prepare_model_data(
     region: str = "NSW1",
     horizon: int = 30,
     features: Literal["all"] | Sequence[str] = "all",
-    target: Literal["change", "price"] = "change",
+    target: Literal["change", "price", "aemo_error"] = "change",
     config: FeatureConfig | None = None,
     train_data=None,
     test_data=None,
@@ -120,6 +122,8 @@ def prepare_model_data(
     target:
         ``"change"`` (default): ``future RRP - current RRP``.
         ``"price"``: direct future RRP.
+        ``"aemo_error"``: ``future RRP - AEMO P5MIN forecast RRP``. Rows
+        without an aligned AEMO forecast at ``horizon`` are removed.
 
     config:
         Optional FeatureConfig override. ``horizon`` remains authoritative and
@@ -140,8 +144,10 @@ def prepare_model_data(
     if horizon <= 0:
         raise ValueError("horizon must be a positive number of minutes")
 
-    if target not in {"change", "price"}:
-        raise ValueError("target must be either 'change' or 'price'")
+    if target not in {"change", "price", "aemo_error"}:
+        raise ValueError(
+            "target must be one of 'change', 'price', or 'aemo_error'"
+        )
 
     if config is None:
         config = FeatureConfig(
@@ -151,6 +157,14 @@ def prepare_model_data(
         config = replace(
             config,
             target_horizons_minutes=(horizon,),
+        )
+
+    if target == "aemo_error" and horizon not in config.p5min_horizons_minutes:
+        config = replace(
+            config,
+            p5min_horizons_minutes=tuple(
+                sorted({*config.p5min_horizons_minutes, horizon})
+            ),
         )
 
     if train_data is None or test_data is None:
@@ -254,6 +268,19 @@ def prepare_model_data(
     # Do not require every feature to be non-null. XGBoost can use missing values,
     # while linear/deep models can apply their own imputation/scaling policy.
     required_rows = ["target_rrp", "rrp"]
+    aemo_forecast_column = f"p5_h{horizon:02d}_rrp"
+    if target == "aemo_error":
+        if aemo_forecast_column not in train_features.columns:
+            raise ValueError(
+                "AEMO-error target requires the aligned P5MIN forecast column "
+                f"{aemo_forecast_column!r} in training data"
+            )
+        if aemo_forecast_column not in test_features.columns:
+            raise ValueError(
+                "AEMO-error target requires the aligned P5MIN forecast column "
+                f"{aemo_forecast_column!r} in test data"
+            )
+        required_rows.append(aemo_forecast_column)
 
     train_df = (
         train_features.dropna(subset=required_rows)
@@ -276,6 +303,13 @@ def prepare_model_data(
     if target == "change":
         train_df["target"] = train_df["target_rrp"] - train_df["rrp"]
         test_df["target"] = test_df["target_rrp"] - test_df["rrp"]
+    elif target == "aemo_error":
+        train_df["target"] = (
+            train_df["target_rrp"] - train_df[aemo_forecast_column]
+        )
+        test_df["target"] = (
+            test_df["target_rrp"] - test_df[aemo_forecast_column]
+        )
     else:
         train_df["target"] = train_df["target_rrp"]
         test_df["target"] = test_df["target_rrp"]
