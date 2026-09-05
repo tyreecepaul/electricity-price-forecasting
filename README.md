@@ -229,7 +229,7 @@ git merge origin/production
 git push origin dev
 ```
 
-## Data Stage 1: Ingestion & Cleaning Contract
+## Stage 1: Ingestion & Cleaning Contract
 
 `data_cleaning/data.py` is the shared contract for the rest of the pipeline (EDA, all modelling tracks, evaluation). It exposes:
 
@@ -273,6 +273,22 @@ Chronological, no shuffling. The **last 20% of the requested date range** is tes
 | `settlement_date` | `datetime64` | Timestamp of the 5-minute dispatch interval |
 | `region` | `str` | NEM region ID (feature), e.g. `NSW1` |
 | `rrp` | `float64` | Regional Reference Price in $/MWh (**target**) |
+
+
+## Stage 2: Model Fitting
+
+Models are implemented in `models/*.py` where each python file implements a `getModel()` function
+that returns the following class:
+
+### Shared Model Class
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `model_name` | `str` | The name of the model (i.e. "Multi Layer Perceptron") |
+| `description` | `str` | A short description of the model and it's hyperparameters |
+| `fit(trainingData: Data): None` | `function` | Function that fits the training data onto the model|
+| `predict(testData: Data): np.ndarray[np.float64]` | `function` | Function generates predictions
+based on a given array of training examples |
 
 
 ## Pricing Model References
