@@ -50,9 +50,9 @@ from preprocessing import (
 
 
 EXPERIMENT = ExperimentConfig(
-    region="NSW1",
-    horizon_minutes=5,
-    target_type="change",
+    region="QLD1",
+    horizon_minutes=30,
+    target_type="price",
     model_features="all",
     validation_fraction=0.20,
 )

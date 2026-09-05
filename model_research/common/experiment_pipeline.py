@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from preprocessing import PreparedModelData, prepare_model_data
 
 
-TargetType = Literal["change", "aemo_error"]
+TargetType = Literal["change", "price", "aemo_error"]
 FeatureSelection = Literal["all"] | Sequence[str]
 CACHE_SCHEMA_VERSION = 1
 
@@ -51,8 +51,10 @@ class ExperimentConfig:
     def __post_init__(self) -> None:
         if self.horizon_minutes <= 0:
             raise ValueError("horizon_minutes must be positive")
-        if self.target_type not in {"change", "aemo_error"}:
-            raise ValueError("target_type must be 'change' or 'aemo_error'")
+        if self.target_type not in {"change", "price", "aemo_error"}:
+            raise ValueError(
+                "target_type must be 'change', 'price', or 'aemo_error'"
+            )
         if not 0 < self.validation_fraction < 1:
             raise ValueError("validation_fraction must be between 0 and 1")
 
@@ -64,7 +66,9 @@ class ExperimentConfig:
     def predicted_target_column(self) -> str:
         if self.target_type == "change":
             return "predicted_change"
-        return "predicted_aemo_error"
+        if self.target_type == "aemo_error":
+            return "predicted_aemo_error"
+        return "predicted_price"
 
     @property
     def feature_cache_key(self) -> str:
@@ -211,11 +215,14 @@ def reconstruct_price_forecast(
     config: ExperimentConfig,
 ) -> np.ndarray:
     """Convert target-scale model output into an RRP forecast."""
+    predicted_target = np.asarray(predicted_target)
+    if config.target_type == "price":
+        return predicted_target
     if config.target_type == "change":
         base = frame["rrp"].to_numpy()
     else:
         base = frame[config.aemo_forecast_column].to_numpy()
-    return base + np.asarray(predicted_target)
+    return base + predicted_target
 
 
 def aemo_forecast_values(
