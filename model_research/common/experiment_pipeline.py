@@ -197,6 +197,14 @@ def prepare_experiment(
     )
 
 
+def complete_case_rows(
+    frame: pd.DataFrame,
+    feature_columns: Sequence[str],
+) -> pd.DataFrame:
+    """Return rows usable by models that cannot accept missing numeric inputs."""
+    return frame.dropna(subset=[*feature_columns, "target"]).copy()
+
+
 def reconstruct_price_forecast(
     frame: pd.DataFrame,
     predicted_target: np.ndarray,
@@ -224,6 +232,7 @@ def forecast_metrics(actual, predicted) -> dict[str, float]:
     """Calculate standard point-forecast error metrics."""
     return {
         "mae": float(mean_absolute_error(actual, predicted)),
+        "mse": float(mean_squared_error(actual, predicted)),
         "rmse": float(mean_squared_error(actual, predicted) ** 0.5),
         "median_ae": float(median_absolute_error(actual, predicted)),
     }
@@ -243,6 +252,7 @@ def print_metrics(
     }
     for metric_name, label in (
         ("mae", "MAE"),
+        ("mse", "MSE"),
         ("rmse", "RMSE"),
         ("median_ae", "Median AE"),
     ):

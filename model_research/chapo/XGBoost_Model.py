@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from model_research.common.experiment_pipeline import (
     ExperimentConfig,
     build_results_frame,
+    complete_case_rows,
     evaluate_aemo_rows,
     print_experiment_summary,
     print_improvement,
@@ -32,10 +33,10 @@ from model_research.common.experiment_pipeline import (
 
 EXPERIMENT = ExperimentConfig(
     region="NSW1",
-    horizon_minutes=60,
+    horizon_minutes=30,
     target_type="change",
     model_features="all",
-    validation_fraction=0.15,
+    validation_fraction=0.20,
 )
 
 
@@ -50,7 +51,7 @@ XGBOOST_PARAMETERS = {
     "reg_alpha": 0.1,
     "reg_lambda": 8.0,
     "objective": "reg:absoluteerror",
-    "eval_metric": "mae",
+    "eval_metric": "rmse",
     "tree_method": "hist",
     "max_bin": 256,
     "n_jobs": -1,
@@ -68,6 +69,17 @@ validation_df = experiment.validation_df
 test_df = data.test_df
 
 print_experiment_summary(experiment)
+
+fit_df = complete_case_rows(fit_df, features)
+validation_df = complete_case_rows(validation_df, features)
+final_train_df = complete_case_rows(data.train_df, features)
+final_test_df = complete_case_rows(data.test_df, features)
+
+print("\nCOMPARABLE COMPLETE-CASE ROWS")
+print("Fit rows:", len(fit_df))
+print("Validation rows:", len(validation_df))
+print("Final training rows:", len(final_train_df))
+print("Final test rows:", len(final_test_df))
 
 X_fit = fit_df[features]
 y_fit = fit_df["target"]
@@ -89,7 +101,7 @@ selection_model.fit(
     X_fit,
     y_fit,
     eval_set=[(X_validation, y_validation)],
-    verbose=50,
+    verbose=False,
 )
 selection_seconds = time.perf_counter() - start_time
 
@@ -132,7 +144,7 @@ evaluate_aemo_rows(
     validation_predictions,
     EXPERIMENT,
     model_name="XGBoost",
-    include_persistence=False,
+    include_persistence=True,
 )
 
 
@@ -145,27 +157,31 @@ final_model = XGBRegressor(
 
 print("\nRefitting final XGBoost on all pre-test training data...")
 start_time = time.perf_counter()
-final_model.fit(data.X_train, data.y_train, verbose=False)
+final_model.fit(
+    final_train_df[features],
+    final_train_df["target"],
+    verbose=False,
+)
 refit_seconds = time.perf_counter() - start_time
 print(f"Final refit finished in {refit_seconds:.1f} seconds")
 
 
 # Evaluate final test forecasts
 
-predicted_target = final_model.predict(data.X_test)
+predicted_target = final_model.predict(final_test_df[features])
 predictions = reconstruct_price_forecast(
-    test_df,
+    final_test_df,
     predicted_target,
     EXPERIMENT,
 )
-actual_test = test_df["target_rrp"].to_numpy()
+actual_test = final_test_df["target_rrp"].to_numpy()
 
 test_metrics = print_metrics(
     "FINAL TEST RESULTS",
     actual_test,
     {
         "XGBoost": predictions,
-        "Persistence": test_df["rrp"].to_numpy(),
+        "Persistence": final_test_df["rrp"].to_numpy(),
     },
 )
 print_improvement(
@@ -177,7 +193,7 @@ print_improvement(
 
 evaluate_aemo_rows(
     "FINAL TEST: PAIRED XGBOOST VS AEMO",
-    test_df,
+    final_test_df,
     predictions,
     EXPERIMENT,
     model_name="XGBoost",
@@ -188,24 +204,18 @@ evaluate_aemo_rows(
 # Interval-level and regime diagnostics
 
 results = build_results_frame(
-    test_df,
+    final_test_df,
     predictions,
     predicted_target,
     EXPERIMENT,
 )
-results = results.rename(columns={"model_error": "xgb_error"})
-
-print("\nFIRST 20 PREDICTIONS")
-print("--------------------")
-pd.set_option("display.max_columns", None)
-print(results.head(20))
-
-print("\nLARGEST XGBOOST ERRORS")
-print("----------------------")
-print(results.sort_values("xgb_error", ascending=False).head(20))
 
 print_price_regime_results(results, model_name="XGBoost")
-print_target_diagnostics(data.y_test.to_numpy(), predicted_target, EXPERIMENT)
+print_target_diagnostics(
+    final_test_df["target"].to_numpy(),
+    predicted_target,
+    EXPERIMENT,
+)
 
 
 # XGBoost-specific feature importance
@@ -221,6 +231,6 @@ importance = (
     .reset_index(drop=True)
 )
 
-print("\nFEATURE IMPORTANCE")
-print("------------------")
-print(importance.to_string(index=False))
+#print("\nFEATURE IMPORTANCE")
+#print("------------------")
+#print(importance.to_string(index=False))
