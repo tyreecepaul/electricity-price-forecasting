@@ -29,6 +29,11 @@ scripts, especially `region`, `horizon_minutes`, `target_type`,
 same complete test rows. The `FINAL TEST RESULTS` and `RESULTS BY PRICE REGIME`
 sections are comparable only when these settings and row counts match.
 
+Supported targets are `change` for future RRP minus current RRP, `price` for
+direct future RRP, and `aemo_error` for future RRP minus the aligned AEMO P5MIN
+forecast. Price reconstruction adds the appropriate current/AEMO baseline for
+the two residual targets and returns direct `price` predictions unchanged.
+
 ## Starting another model
 
 The minimum shared setup is:
