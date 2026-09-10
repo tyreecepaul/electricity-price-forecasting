@@ -289,6 +289,14 @@ abstract `Model` class
 | `predict(test_data: Data) -> np.ndarray` | Makes predictions based on a given test dataset |
 | `get_model_name() -> str` | Returns the name of your model |
 
+## Evaluation
+
+Using the implemented `Model` class and your test data `Data` class, you can invoke the following
+function to evaluate the model
+
+```python
+evaluate(model: Model, test_data: Data) -> None:
+```
 
 ## Pricing Model References
 - [UNSW-CEEM/NEMOSIS git](https://github.com/UNSW-CEEM/NEMOSIS)
