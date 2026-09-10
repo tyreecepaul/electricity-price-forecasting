@@ -229,7 +229,7 @@ git merge origin/production
 git push origin dev
 ```
 
-## Stage 1: Ingestion & Cleaning Contract
+## Ingestion & Cleaning Contract
 
 `data_cleaning/data.py` is the shared contract for the rest of the pipeline (EDA, all modelling tracks, evaluation). It exposes:
 
@@ -275,20 +275,19 @@ Chronological, no shuffling. The **last 20% of the requested date range** is tes
 | `rrp` | `float64` | Regional Reference Price in $/MWh (**target**) |
 
 
-## Stage 2: Model Fitting
+## Model Fitting
 
-Models are implemented in `models/*.py` where each python file implements a `getModel()` function
-that returns the following class:
+To be able to evaluate models using the universal `evaluate()` function, it must implement the
+abstract `Model` class
 
-### Shared Model Class
+### Abstract Model Class
 
-| Attribute | Type | Meaning |
-|---|---|---|
-| `model_name` | `str` | The name of the model (i.e. "Multi Layer Perceptron") |
-| `description` | `str` | A short description of the model and it's hyperparameters |
-| `fit(trainingData: Data): None` | `function` | Function that fits the training data onto the model|
-| `predict(testData: Data): np.ndarray[np.float64]` | `function` | Function generates predictions
-based on a given array of training examples |
+| Abstract Function | Meaning |
+|---|---|
+| `__init__()` | Initialise your model with specific hyperparameters | 
+| `train(training_data: Data) -> None` | Trains your model based on a given training dataset | 
+| `predict(test_data: Data) -> np.ndarray` | Makes predictions based on a given test dataset |
+| `get_model_name() -> str` | Returns the name of your model |
 
 
 ## Pricing Model References
