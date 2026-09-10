@@ -280,7 +280,7 @@ Chronological, no shuffling. The **last 20% of the requested date range** is tes
 To be able to evaluate models using the universal `evaluate()` function, it must implement the
 abstract `Model` class
 
-### Abstract Model Class
+## Abstract Model Class
 
 | Abstract Function | Meaning |
 |---|---|
