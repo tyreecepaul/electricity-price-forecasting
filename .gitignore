@@ -16,3 +16,15 @@ __pycache__/
 *.h5
 *.hdf5
 *.nc
+
+docs/proposal/
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+
+docs/report/
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
