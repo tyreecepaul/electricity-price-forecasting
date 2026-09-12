@@ -280,22 +280,29 @@ Chronological, no shuffling. The **last 20% of the requested date range** is tes
 To be able to evaluate models using the universal `evaluate()` function, it must implement the
 abstract `Model` class
 
+## Model Fitting
+
+To be able to evaluate models using the universal `evaluate()` function, it must implement the
+abstract `Model` class
+
 ## Abstract Model Class
 
 | Abstract Function | Meaning |
 |---|---|
 | `__init__()` | Initialise your model with specific hyperparameters | 
-| `train(training_data: Data) -> None` | Trains your model based on a given training dataset | 
-| `predict(test_data: Data) -> np.ndarray` | Makes predictions based on a given test dataset |
+| `train(training_data: PreparedModelData) -> None` | Trains your model based on a given prepared training dataset | 
+| `predict(test_data: PreparedModelData) -> np.ndarray` | Returns one price prediction ($/MWh RRP) per row of `test_data.test_df` |
 | `get_model_name() -> str` | Returns the name of your model |
+
+`PreparedModelData` comes from `preprocessing.prepare_model_data()`, see [preprocessing/example_usage.py](../preprocessing/example_usage.py). If your model trains on a `change` or `aemo_error` target, reconstruct the price yourself inside `predict()` before returning (e.g. `test_data.test_df["rrp"].to_numpy() + predicted_change`).
 
 ## Evaluation
 
-Using the implemented `Model` class and your test data `Data` class, you can invoke the following
+Using the implemented `Model` class and your prepared test data, you can invoke the following
 function to evaluate the model
 
 ```python
-evaluate(model: Model, test_data: Data) -> None:
+evaluate(model: Model, test_data: PreparedModelData) -> None:
 ```
 
 ## Pricing Model References
