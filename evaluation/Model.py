@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from data_cleaning.data import Data
 import numpy as np
+from preprocessing import PreparedModelData
 
 class Model(ABC):
 
@@ -11,11 +11,11 @@ class Model(ABC):
         pass
 
     @abstractmethod
-    def train(self, training_data: Data) -> None:
+    def train(self, training_data: PreparedModelData) -> None:
         pass
 
     @abstractmethod
-    def predict(self, test_data: Data) -> np.ndarray:
+    def predict(self, test_data: PreparedModelData) -> np.ndarray:
         pass
 
     def get_model_name(self) -> str:
