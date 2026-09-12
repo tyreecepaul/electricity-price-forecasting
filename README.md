@@ -229,7 +229,7 @@ git merge origin/production
 git push origin dev
 ```
 
-## Data Stage 1: Ingestion & Cleaning Contract
+## Ingestion & Cleaning Contract
 
 `data_cleaning/data.py` is the shared contract for the rest of the pipeline (EDA, all modelling tracks, evaluation). It exposes:
 
@@ -274,6 +274,29 @@ Chronological, no shuffling. The **last 20% of the requested date range** is tes
 | `region` | `str` | NEM region ID (feature), e.g. `NSW1` |
 | `rrp` | `float64` | Regional Reference Price in $/MWh (**target**) |
 
+
+## Model Fitting
+
+To be able to evaluate models using the universal `evaluate()` function, it must implement the
+abstract `Model` class
+
+## Abstract Model Class
+
+| Abstract Function | Meaning |
+|---|---|
+| `__init__()` | Initialise your model with specific hyperparameters | 
+| `train(training_data: Data) -> None` | Trains your model based on a given training dataset | 
+| `predict(test_data: Data) -> np.ndarray` | Makes predictions based on a given test dataset |
+| `get_model_name() -> str` | Returns the name of your model |
+
+## Evaluation
+
+Using the implemented `Model` class and your test data `Data` class, you can invoke the following
+function to evaluate the model
+
+```python
+evaluate(model: Model, test_data: Data) -> None:
+```
 
 ## Pricing Model References
 - [UNSW-CEEM/NEMOSIS git](https://github.com/UNSW-CEEM/NEMOSIS)
