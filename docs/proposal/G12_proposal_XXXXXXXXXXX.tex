@@ -63,7 +63,7 @@ We propose to implement a deep learning-based short-term electricity price forec
 system for the Australian NEM, which comprises five interconnected regional markets (NSW,
 QLD, SA, TAS, VIC). We will implement and compare a series of models, forecasting spot
 prices at 5-minute, 30-minute and 60-minute horizons. This will include standard deep
-learning baselines (MLP, CNN, LSTM, CNN-LSTM, self-attention/Transformer models) with
+learning baselines (MLP, LSTM, Boosting, self-attention/Transformer models) with
 parameter fine-tuning, creating a collection of models and experimenting with different
 architectures to determine the best performing model. All models will be trained on
 identical data splits and evaluated using the same metrics (MAE, RMSE, sMAPE and
@@ -72,15 +72,15 @@ events. This methodology was inspired by the benchmarking approach of
 \citet{gani2026deeptime}, which tests whether increased model complexity correlates with
 improved performance on volatile, regime-switching electricity price series, while relating
 our findings to the concepts covered in the course. Our objective is to outperform a naive 
-persistence benchmark (the price left unchanged) and AEMO's own published projections whilst 
-using them as model inputs. AEMO releases five-minute pre-dispatch (P5MIN) projections of 
-price, demand and available generation for the coming hour, yet neither reference study uses 
-them, which is where the novelty in our project lies.
+persistence benchmark and AEMO's own published projections whilst using them as model inputs.
+AEMO releases five-minute pre-dispatch (P5MIN) projections of price, demand and available 
+generation for the coming hour, yet neither reference study uses them, which is where the 
+novelty in our project lies.
 
 \section{Significance}
 
 Electricity is sold at unregulated spot prices but bought by consumers at regulated
-rates, so when prices swing wildly, retailers take the hit directly, which can threaten
+rates, so when prices swing wildly, retailers take the hit directly, which can threaten3 Fea
 both their finances and the stability of the grid \citep{li2025mgaal}. Between October
 2021 and January 2022, average NEM spot prices were almost four times higher than the
 year before and peaked at \$14{,}000/MWh \citep{li2025mgaal}. More recent data from
@@ -89,29 +89,36 @@ negative on a large share of intervals, and the evening ramp as solar output dro
 is still a major source of extreme price spikes \citep{gani2026deeptime}. Being able to
 forecast prices accurately in these conditions is useful for retailers managing risk,
 generators deciding when to bid and system operators trying to keep enough reserve
-capacity on hand. \citet{gani2026deeptime} found that recent state-of-the-art models (TimesNet, iTransformer,
-TimeMixer), despite topping standard benchmarks, are often beaten by simpler recurrent and
-convolutional models on real NEM data. If complexity is not what drives accuracy, the information 
-a model is given at prediction time is. As AEMO publishes its own forward projections, whether 
-or not those projections improve deep forecasts is the gap we address.
-
-
+capacity on hand. \citet{gani2026deeptime} found that several recent state-of-the-art time-series models
+(TimesNet, iTransformer, TimeMixer), despite being top performers on standard, fairly
+stable benchmark datasets, are often beaten by much simpler recurrent and convolutional
+models once tested on real NEM data with actual volatility, structural breaks and
+negative prices. This shows that a bigger or more complex model isn't automatically
+better; what matters instead is whether a model's assumptions, like explicit spatial
+structure, sensible loss design, or multi-task regularisation, fit the statistical
+behaviour of the data it's being used on.
 
 \section{Feasibility}
 
-\textbf{Data.} Both reference papers draw on data from AEMO, which publishes historical
-Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data
-at 5-minute resolution for all five NEM regions. \citet{gani2026deeptime} retrieve this
-data programmatically and share their processed dataset and code on GitHub, while
-\citet{li2025mgaal} use an equivalent feature set. We will use \texttt{NEMSEER}, a
-Python package for querying and pre-processing AEMO NEM data, to pull and clean these
-same series for all five regions and build a matching feature set, giving us a large,
-recent, license-clear dataset without writing custom scraping code. \\
-\textbf{What has already been done.} Over the past four weeks we have reviewed both
-papers in detail, including their data pipelines, architectures, and evaluation
-methodology, confirmed that the code and data of \citet{gani2026deeptime} are openly
-available as a reproducibility reference, and set up a \texttt{NEMSEER}-based data
-pipeline as the first step of our own implementation. \\
+\textbf{Data:} We are using the AEMO public dataset, which publishes historical Regional
+Reference Price (RRP), demand, generation and inter-regional power-flow data
+at 5-minute resolution for all five NEM regions. We will use \texttt{NEMOSIS}, a Python
+package for querying and pre-processing AEMO NEM data, to pull and clean these same series
+for all five regions within a data pipeline which all models can use.
+\textbf{(John adds more details here)}. \\
+\textbf{Acomplished So Far:} Over the past four weeks, we have implemented two baseline deep
+models (MLP regressor and XGBoost regressor) currently configured for 30-minute price forecasting
+on QLD and NSW. We have also built the full data pipeline that fetches and caches AEMO dispatch price, demand/generation, interconnector,
+and P5MIN forecast data via NEMOSIS and NEMSEER, constructing a shared feature set
+(lags, rolling statistics, reserve margins, and AEMO forecast alignment) through a common
+model interface. This pipeline also handles chronological train/validation/test splitting with
+a forecast-horizon embargo, ensuring consistent, leakage-free data preparation for all models
+going forward.\\
+
+
+
+
+
 \textbf{Planned work.} We have split into parallel workstreams and organised the
 implementation into two-week sprints, so each stage exercises concepts covered in
 lectures. Sprint~1 (Weeks~6--7, 31/08--13/09) covers data retrieval and preprocessing
