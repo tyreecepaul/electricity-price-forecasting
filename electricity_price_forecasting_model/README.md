@@ -1,5 +1,5 @@
 ### Main Training Directory
-----------------------------
+
 ```
 .
 ├── layers # all layers including modules and models to be used in final model
@@ -10,11 +10,10 @@
 
 
 ## Model Layout (Image for Paper)
------------------------------------
 
 
 ## Layers
------------------------------------
+
 Using Pytorch we can easily create modules or layers for the final model and implementation.
 Within the layers directory there should only be your designed layer in the form of a child class of nn.Module.
 As an example heres chapos MLP:
@@ -46,10 +45,10 @@ class NeuralNetwork(nn.Module):
 All training and evaluation should be done in Experiment Config, preferably run within the final model as a test with the new module.
 
 ## Final Model
------------------------------------
+
 Final model will utilize the layers designed by us and constructed together in a our chosen manner.
 
 ## Experiment outline
------------------------------------
+
 
 - Our experiment parameters, setup, features selected etc
