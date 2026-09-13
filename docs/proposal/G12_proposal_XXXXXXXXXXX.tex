@@ -109,11 +109,17 @@ The pipeline constructs a shared feature set (lags, rolling statistics, reserve 
 AEMO forecast alignment) through a common model interface, and handles chronological
 train/validation/test splitting with a forecast-horizon embargo to ensure consistent,
 leakage-free data preparation for all models going forward.\\
-\textbf{Accomplished So Far:} We have implemented two baseline deep models, an MLP regressor
-and an XGBoost regressor, currently configured for 30-minute price forecasting on the QLD and
-NSW regions.
+\textbf{Accomplished So Far:} We have implemented three baseline deep models, an MLP
+regressor, XGBoost regressor, and a standard Transformer \citep{vaswani2017attention},
+currently configured for 30-minute price forecasting on the QLD and NSW regions. 
+\begin{itemize}
+	\item Transformer follows the classical architecture, with tabular data encoded into a sequential
+form via a linear layer projecting the 1-dimensional input into a 64-dimensional embedding
+before being fed into the Transformer. 
+\end{itemize}
+The full pipeline described above has been implemented and used to train all three models.
 \textbf{Planned Work:}\\
-\textbf{Evaluation}\\
+\textbf{Evaluation:}\\
 \textbf{Risk and Mitigation:} Compute time and budget for training models is a key risk,
 mitigated by training on UQ's Rangpur HPC cluster for GPU resources. Model complexity risk
 is mitigated by implementing simpler baseline models first before moving to more
