@@ -71,7 +71,10 @@ directional accuracy), with a focus on performance during extreme and negative p
 events. This methodology was inspired by the benchmarking approach of
 \citet{gani2026deeptime}, which tests whether increased model complexity correlates with
 improved performance on volatile, regime-switching electricity price series, while relating
-our findings to the concepts covered in the course.
+our findings to the concepts covered in the course. Our objective is to outperform AEMO's own
+published projections whilst using them as model inputs. AEMO releases five-minute pre-dispatch 
+(P5MIN) projections of price, demand and available generation for the coming hour, yet neither 
+reference study uses them, which is where the novelty in our project lies.
 
 \section{Significance}
 
@@ -85,14 +88,13 @@ negative on a large share of intervals, and the evening ramp as solar output dro
 is still a major source of extreme price spikes \citep{gani2026deeptime}. Being able to
 forecast prices accurately in these conditions is useful for retailers managing risk,
 generators deciding when to bid and system operators trying to keep enough reserve
-capacity on hand. \citet{gani2026deeptime} found that several recent state-of-the-art time-series models
-(TimesNet, iTransformer, TimeMixer), despite being top performers on standard, fairly
-stable benchmark datasets, are often beaten by much simpler recurrent and convolutional
-models once tested on real NEM data with actual volatility, structural breaks and
-negative prices. This shows that a bigger or more complex model isn't automatically
-better; what matters instead is whether a model's assumptions, like explicit spatial
-structure, sensible loss design, or multi-task regularisation, fit the statistical
-behaviour of the data it's being used on.
+capacity on hand. \citet{gani2026deeptime} found that recent state-of-the-art models (TimesNet, iTransformer,
+TimeMixer), despite topping standard benchmarks, are often beaten by simpler recurrent and
+convolutional models on real NEM data. If complexity is not what drives accuracy, the information 
+a model is given at prediction time is. As AEMO publishes its own forward projections, whether 
+or not those projections improve deep forecasts is the gap we address.
+
+
 
 \section{Feasibility}
 
