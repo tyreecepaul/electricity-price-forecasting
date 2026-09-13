@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from data_cleaning.data import Data
+from pipeline.data_cleaning.data import Data
 import numpy as np
 
 class Model(ABC):

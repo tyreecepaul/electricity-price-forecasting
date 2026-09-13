@@ -1,4 +1,4 @@
-from data_cleaning.data import Data, getTrainingData, getTestData
+from pipeline.data_cleaning.data import Data, getTrainingData, getTestData
 import datetime
 
 def main() -> None:

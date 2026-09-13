@@ -1,6 +1,6 @@
 """Minimal examples for the shared NEM preprocessing pipeline."""
 
-from preprocessing import (
+from pipeline.preprocessing import (
     NumericPreprocessor,
     make_sequences,
     prepare_model_data,

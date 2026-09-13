@@ -2,8 +2,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from evaluation.Model import Model
-from preprocessing import PreparedModelData
+from pipeline.model import Model
+from pipeline.preprocessing import PreparedModelData
 
 METRIC_NAMES: list[str] = ["mae", "rmse", "sse", "median_ae"]
 
