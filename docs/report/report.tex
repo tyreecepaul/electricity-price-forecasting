@@ -1,0 +1,159 @@
+\documentclass[a4paper,11pt]{article} % Don't change this
+\usepackage{fullpage} % Don't change this
+
+\usepackage{titling} % Don't change this
+\pretitle{\vspace{-6em}\begin{center}\larger[2]\bf} % Don't change this
+\postauthor{\end{center}} % Don't change this
+\preauthor{\vspace{-2em}\begin{center}\smaller[1]} % Don't change this
+\postauthor{\end{center}\vspace{-5em}} % Don't change this
+
+\usepackage[shortlabels]{enumitem} % Don't change this 
+\setlist{itemsep=0em,topsep=0.3em} % Don't change this
+
+%%% Some useful packages.
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{relsize}
+\usepackage{cleveref}
+\crefname{figure}{Fig.}{Figs.}
+
+\usepackage[backend=bibtex,natbib=true,style=authoryear-icomp,maxnames=3,giveninits=true]{biblatex}
+\citetrackerfalse
+\bibliography{ref} % put bib entries in ref.bib
+
+\usepackage[linesnumbered]{algorithm2e}
+\usepackage{cleveref}
+\crefname{equation}{Equation.}{Equations.}
+\crefname{figure}{Figure}{Figures.}
+
+\usepackage{lipsum}
+\usepackage{wrapfig}
+\usepackage{tikz}
+
+%%% Add additional packages or macros below
+
+\begin{document}
+
+\title{STAT3007/7007 Project Report Template}
+\author{Group X \\
+Issac Newton (s12345678) $\cdot$
+Albert Einstein (s23456781) $\cdot$
+Alan Turing (s34567812) \\
+John von Neumann (s45678123) $\cdot$ Kurt G\"odel (s56781234)}
+
+\date{}
+\maketitle
+
+\begin{abstract}
+	This is a \LaTeX\ template for your project report.
+	Note the following: 
+	(a) Change the title and group information above to your project title and
+	group information.
+	(b) Your report should not exceed \underline{12 pages} (excluding the references and
+	appendices).
+	You can change the section titles, but you should not alter the font size or
+	the page size.
+	It is perfectly fine to use less then 12 pages and conciseness is a marking
+	criterion.
+	(c) You may find it helpful to take a look at some NeurIPS papers at
+	\url{https://papers.nips.cc/} and mimic their writing style.
+	(d) You can do collaborative writing by uploading the template to \underline{Overleaf}:
+	download \emph{STAT3007-7007\_Project\_Templates.zip},
+	login to \url{https://www.overleaf.com},
+	click \emph{Upload Project},
+	then upload the zip file.
+	Overleaf provides excellent guides on \LaTeX\ at
+	\url{https://www.overleaf.com/learn}.
+	Often, a quicker way to get the answer to a \LaTeX\ question is to ask ChatGPT;
+	in many cases, it can give you a correct answer without much prompting.
+	(e) When you submit your report, name it in the format of
+	\emph{GX\_report\_AlanTuring.pdf}, where 
+	\emph{GX} should be replaced by your group name, and \emph{AlanTuring} by the
+	submitter's name.
+	Only one group member needs to submit.
+	(f) Have fun writing a nice report for your project findings.
+\end{abstract}
+
+\section{Introduction}
+
+Describe your problem with a discussion on relevant background, motivation, and
+significance in this section.
+
+\section{Related Work}
+
+Provide a discussion on related work in this section.
+Use \verb+\citet+ to produce textual citations, and \verb+\citep+ to produce
+parenthetical citations, as illustrated below:
+\begin{itemize}
+	\item \citet{mcculloch1943logical} proposed the linear threshold neuron as a
+		mathematical model for biological neurons.
+	\item One of the first mathematical models for biological neurons is the linear
+		threshold neuron \citep{mcculloch1943logical}. 
+\end{itemize}
+
+\section{Methods}
+
+Describe your methods in this section.
+You should provide sufficient details so that your work is reproducible.
+
+\section{Experiments}
+
+Describe your experiment settings, datasets used, the results that you obtained,
+and provide a discussion on the results. 
+You should present your results in a concise manner.
+For example, if you would like to include the learning curves for several
+algorithms, generally you should present the curves in a single figure, rather
+than producing one figure for one algorithm. 
+Similarly, it is better to having a single table comparing the performance of
+several algorithms, rather than having one table for each algorithm and
+scattering them across your report.
+
+\section{Conclusion}
+
+Write your conclusion in this section.
+You can discuss the limitations of your project here.
+
+\section*{Contribution}
+
+State the contribution of each group member.
+Below is an example.
+\begin{itemize}
+	\item Newton: designed, implemented and evaluated method A; drafted content
+		related to method A.
+	\item Einstein: implemented and evaluated method B; drafted content related to
+		method B.
+	\item Turing: reviewed the literature and wrote Related Work.
+	\item Neumann: collected and processed the datasets, set up the experiment
+		environment; drafted content on these.
+	\item G\"odel: compiled and polished the report.
+\end{itemize}
+
+\section*{Acknowledgement}
+
+If anyone not in the group has collaborated with or advised you on the project, you
+should fully acknowledge their contribution.
+
+\section*{Appendix A.}
+You can include any additional materials in one or more appendices.
+Note that you should have all your key messages in the main text, and the
+materials in an appendix should be supplementary but referenced in your main
+text.
+At most \underline{5 pages} are allowed for the appendices.
+
+\smaller
+\printbibliography
+
+\newpage
+Indicate whether all your group members consent for your report to be used as a
+teaching resource by including one of the statement below.
+
+\begin{center}
+\emph{We give consent for this to be used as a teaching resource.}\\
+\emph{We DO NOT give consent for this to be used as a teaching resource.}
+\end{center}
+
+\end{document}
