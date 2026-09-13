@@ -49,12 +49,11 @@ John Pioc (s4775725) $\cdot$ Massimo Spadaro (s4850133)}
 \maketitle
 
 \begin{abstract}
-	Spot electricity prices in Australia's National Electricity Market (NEM) are highly
-	volatile, non-stationary and prone to extreme price spikes. Using publicly available
+	This is an application focused project on spot electricity prices in Australia's National Electricity Market (NEM), 
+	which are highly volatile, non-stationary and prone to extreme price spikes. Using publicly available
 	AEMO market data, we implement and evaluate deep learning architectures for spot price
-	forecasting across the five NEM regions, applying hyperparameter tuning across the
-	model series. We benchmark forecasting performance against AEMO's official predictions
-	to assess whether deep learning approaches can outperform them.
+	forecasting across the five NEM regions ingested via model pipeline. We benchmark forecasting performance against AEMO's official predictions
+	to assess whether deep learning approaches can outperform them. 
 \end{abstract}
 
 \section{Topic}
@@ -108,7 +107,8 @@ interconnector, and P5MIN forecast series, using \texttt{NEMOSIS} and \texttt{NE
 The pipeline constructs a shared feature set (lags, rolling statistics, reserve margins, and
 AEMO forecast alignment) through a common model interface, and handles chronological
 train/validation/test splitting with a forecast-horizon embargo to ensure consistent,
-leakage-free data preparation for all models going forward.\\
+leakage-free data preparation for all models going forward ensuring consistent experimentation
+within our methodology.\\
 \textbf{Accomplished So Far:} We have implemented three baseline deep models, an MLP
 regressor, XGBoost regressor, and a standard Transformer \citep{vaswani2017attention},
 currently configured for 30-minute price forecasting on the QLD and NSW regions. 
@@ -126,27 +126,6 @@ is mitigated by implementing simpler baseline models first before moving to more
 sophisticated models, building an understanding of baseline performance before adding
 complexity. Timeline risk is mitigated by aligning our planned goals with the weekly course
 content, so we consider the project feasible within the semester timeline.
-
-
-\textbf{Planned work.} We have split into parallel workstreams and organised the
-implementation into two-week sprints, so each stage exercises concepts covered in
-lectures. Sprint~1 (Weeks~6--7, 31/08--13/09) covers data retrieval and preprocessing
-with \texttt{NEMSEER}; implementation of an MLP, a Temporal Convolutional Network, a
-Transformer, an LSTM, and a Gradient Boosting baseline as a non-deep-learning reference
-point; a shared evaluation pipeline reporting MAE, RMSE, sMAPE, and directional
-accuracy so every model is scored consistently; and finalising this proposal. This
-spans course content from data preparation and model selection through to
-gradient-based learning, convolutional and recurrent architectures, and attention
-mechanisms. Sprints~2--3 (Weeks~8--9) then consolidate evaluation across the Sprint~1
-models and move on to the harder graph-attention multi-task model inspired by
-\citet{li2025mgaal}, applying course content on optimisation and regularisation before
-building the graph-neural-network layers and the multi-task loss with learned
-task weights. \\
-\textbf{Evaluation.} We will report MAE, RMSE, sMAPE, and mean directional accuracy on
-day-ahead and two-day-ahead horizons, with a dedicated breakdown for the upper/lower 5\%
-price tail and negative-price intervals, following \citet{gani2026deeptime}, and
-weighted-F1 for the auxiliary spike-classification task once the multi-task model is
-implemented, following \citet{li2025mgaal}.\\
 
 \smaller
 \printbibliography
