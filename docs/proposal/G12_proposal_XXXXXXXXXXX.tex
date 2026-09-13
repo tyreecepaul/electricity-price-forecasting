@@ -100,23 +100,26 @@ behaviour of the data it's being used on.
 
 \section{Feasibility}
 
-\textbf{Data:} We are using the AEMO public dataset, which publishes historical Regional
-Reference Price (RRP), demand, generation and inter-regional power-flow data
-at 5-minute resolution for all five NEM regions. We will use \texttt{NEMOSIS}, a Python
-package for querying and pre-processing AEMO NEM data, to pull and clean these same series
-for all five regions within a data pipeline which all models can use.
-\textbf{(John adds more details here)}. \\
-\textbf{Acomplished So Far:} Over the past four weeks, we have implemented two baseline deep
-models (MLP regressor and XGBoost regressor) currently configured for 30-minute price forecasting
-on QLD and NSW. We have also built the full data pipeline that fetches and caches AEMO dispatch price, demand/generation, interconnector,
-and P5MIN forecast data via NEMOSIS and NEMSEER, constructing a shared feature set
-(lags, rolling statistics, reserve margins, and AEMO forecast alignment) through a common
-model interface. This pipeline also handles chronological train/validation/test splitting with
-a forecast-horizon embargo, ensuring consistent, leakage-free data preparation for all models
-going forward.\\
-
-
-
+\textbf{Data and Pipeline:} We use the AEMO public dataset, which publishes historical
+Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data at
+5-minute resolution for all five NEM regions. Over the past four weeks we have built a full
+data pipeline that fetches and caches this data, including dispatch price, demand/generation,
+interconnector, and P5MIN forecast series, using \texttt{NEMOSIS} and \texttt{NEMSEER}.
+The pipeline constructs a shared feature set (lags, rolling statistics, reserve margins, and
+AEMO forecast alignment) through a common model interface, and handles chronological
+train/validation/test splitting with a forecast-horizon embargo to ensure consistent,
+leakage-free data preparation for all models going forward.\\
+\textbf{Accomplished So Far:} We have implemented two baseline deep models, an MLP regressor
+and an XGBoost regressor, currently configured for 30-minute price forecasting on the QLD and
+NSW regions.
+\textbf{Planned Work:}\\
+\textbf{Evaluation}\\
+\textbf{Risk and Mitigation:} Compute time and budget for training models is a key risk,
+mitigated by training on UQ's Rangpur HPC cluster for GPU resources. Model complexity risk
+is mitigated by implementing simpler baseline models first before moving to more
+sophisticated models, building an understanding of baseline performance before adding
+complexity. Timeline risk is mitigated by aligning our planned goals with the weekly course
+content, so we consider the project feasible within the semester timeline.
 
 
 \textbf{Planned work.} We have split into parallel workstreams and organised the
@@ -138,14 +141,6 @@ day-ahead and two-day-ahead horizons, with a dedicated breakdown for the upper/l
 price tail and negative-price intervals, following \citet{gani2026deeptime}, and
 weighted-F1 for the auxiliary spike-classification task once the multi-task model is
 implemented, following \citet{li2025mgaal}.\\
-\textbf{Risks and mitigation.} The main risks are compute budget for training six model
-families across five regions and two horizons, mitigated by training on UQ's Rangpur
-HPC cluster for GPU resources well beyond a personal machine, and the added complexity
-of the graph-attention model, which is deliberately scheduled for Weeks~8--9 so a
-working set of simpler baselines and a shared evaluation pipeline already exist first.
-Given the public data, the \texttt{NEMSEER} pipeline, available reference
-implementations, and the sprint plan's alignment with weekly course content, we
-consider the project feasible within the semester timeline.
 
 \smaller
 \printbibliography
