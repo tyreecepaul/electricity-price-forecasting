@@ -45,7 +45,6 @@ John Pioc (s4775725) $\cdot$ Massimo Spadaro (s4850133)}
 \maketitle
 
 \begin{abstract}
-<<<<<<< HEAD
 Spot electricity prices in Australia's National Electricity Market (NEM) are highly
 volatile, non-stationary, and prone to extreme price spikes. Using publicly available
 AEMO market and forecast data, we propose to implement and evaluate deep learning
@@ -53,18 +52,10 @@ architectures for price forecasting across the five NEM regions, building from t
 recurrent and convolutional models covered in this course towards a graph-attention,
 multi-task architecture inspired by \citet{li2025mgaal}, benchmarked against the
 comparison of \citet{gani2026deeptime}.
-=======
-	This is an application focused project on spot electricity prices in Australia's National Electricity Market (NEM), 
-	which are highly volatile, non-stationary and prone to extreme price spikes. Using publicly available
-	AEMO market data, we implement and evaluate deep learning architectures for spot price
-	forecasting across the five NEM regions ingested via model pipeline. We benchmark forecasting performance against AEMO's official predictions
-	to assess whether deep learning approaches can outperform them. 
->>>>>>> 4e4e41c4e404ed1d23b7fc615803af0bd7b3b599
 \end{abstract}
 
 \section{Topic}
 
-<<<<<<< HEAD
 We propose to implement a deep-learning based short-term electricity price forecasting
 system for the Australian NEM, which is composed of five interconnected regional markets
 (NSW, QLD, SA, TAS, VIC). We will adapt a simplified version of the multi-task graph
@@ -86,25 +77,6 @@ inspired by the benchmarking approach of \citet{gani2026deeptime}, and directly 
 whether an increase in model complexity correlates with better performance on volatile,
 regime-switching electricity price series, while relating our findings to concepts
 covered in the course.
-=======
-We propose to implement a deep learning-based short-term electricity price forecasting
-system for the Australian NEM, which comprises five interconnected regional markets (NSW,
-QLD, SA, TAS, VIC). We will implement and compare a series of models, forecasting spot
-prices at 5-minute, 30-minute and 60-minute horizons. This will include standard deep
-learning baselines (MLP, LSTM, Boosting, self-attention/Transformer models) with
-parameter fine-tuning, creating a collection of models and experimenting with different
-architectures to determine the best performing model. All models will be trained on
-identical data splits and evaluated using the same metrics (MAE, RMSE, sMAPE and
-directional accuracy), with a focus on performance during extreme and negative price
-events. This methodology was inspired by the benchmarking approach of
-\citet{gani2026deeptime}, which tests whether increased model complexity correlates with
-improved performance on volatile, regime-switching electricity price series, while relating
-our findings to the concepts covered in the course. Our objective is to outperform a naive 
-persistence benchmark and AEMO's own published projections whilst using them as model inputs.
-AEMO releases five-minute pre-dispatch (P5MIN) projections of price, demand and available 
-generation for the coming hour, yet neither reference study uses them, which is where the 
-novelty in our project lies.
->>>>>>> 4e4e41c4e404ed1d23b7fc615803af0bd7b3b599
 
 \section{Significance}
 
@@ -129,7 +101,6 @@ statistical behaviour of the data it's being used on.
 
 \section{Feasibility}
 
-<<<<<<< HEAD
 \textbf{Data.} Both reference papers draw on data from AEMO, which publishes historical
 Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data
 at 5-minute resolution for all five NEM regions, as well as outputs from its ahead-process
@@ -179,35 +150,6 @@ set of simpler baselines and a shared evaluation pipeline already exist first. G
 public data, the \texttt{NEMOSIS}/\texttt{NEMSEER} pipeline, the available reference
 implementation from \citet{gani2026deeptime}, and the sprint plan's alignment with weekly
 course content, we consider the project feasible within the semester timeline.
-=======
-\textbf{Data and Pipeline:} We use the AEMO public dataset, which publishes historical
-Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data at
-5-minute resolution for all five NEM regions. Over the past four weeks we have built a full
-data pipeline that fetches and caches this data, including dispatch price, demand/generation,
-interconnector, and P5MIN forecast series, using \texttt{NEMOSIS} and \texttt{NEMSEER}.
-The pipeline constructs a shared feature set (lags, rolling statistics, reserve margins, and
-AEMO forecast alignment) through a common model interface, and handles chronological
-train/validation/test splitting with a forecast-horizon embargo to ensure consistent,
-leakage-free data preparation for all models going forward ensuring consistent experimentation
-within our methodology.\\
-\textbf{Accomplished So Far:} We have implemented three baseline deep models, an MLP
-regressor, XGBoost regressor, and a standard Transformer \citep{vaswani2017attention},
-currently configured for 30-minute price forecasting on the QLD and NSW regions. 
-\begin{itemize}
-	\item Transformer follows the classical architecture, with tabular data encoded into a sequential
-form via a linear layer projecting the 1-dimensional input into a 64-dimensional embedding
-before being fed into the Transformer. 
-\end{itemize}
-The full pipeline described above has been implemented and used to train all three models.
-\textbf{Planned Work:}\\
-\textbf{Evaluation:}\\
-\textbf{Risk and Mitigation:} Compute time and budget for training models is a key risk,
-mitigated by training on UQ's Rangpur HPC cluster for GPU resources. Model complexity risk
-is mitigated by implementing simpler baseline models first before moving to more
-sophisticated models, building an understanding of baseline performance before adding
-complexity. Timeline risk is mitigated by aligning our planned goals with the weekly course
-content, so we consider the project feasible within the semester timeline.
->>>>>>> 4e4e41c4e404ed1d23b7fc615803af0bd7b3b599
 
 \smaller
 \printbibliography
