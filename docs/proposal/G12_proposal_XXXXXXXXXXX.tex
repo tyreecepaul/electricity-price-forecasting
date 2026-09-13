@@ -1,13 +1,11 @@
 \documentclass[a4paper,11pt]{article} % Don't change this
 \usepackage{fullpage} % Don't change this
-
 \usepackage{titling} % Don't change this
 \pretitle{\vspace{-6em}\begin{center}\larger[2]\bf} % Don't change this
 \postauthor{\end{center}} % Don't change this
 \preauthor{\vspace{-2em}\begin{center}\smaller[1]} % Don't change this
 \postauthor{\end{center}\vspace{-5em}} % Don't change this
-
-\usepackage[shortlabels]{enumitem} % Don't change this 
+\usepackage[shortlabels]{enumitem} % Don't change this
 \setlist{itemsep=0em,topsep=0.3em} % Don't change this
 
 %%% Some useful packages.
@@ -20,16 +18,13 @@
 \usepackage{relsize}
 \usepackage{cleveref}
 \crefname{figure}{Fig.}{Figs.}
-
 \usepackage[backend=bibtex,natbib=true,style=authoryear-icomp,maxnames=3,giveninits=true]{biblatex}
 \citetrackerfalse
 \bibliography{ref} % put bib entries in ref.bib
-
 \usepackage[linesnumbered]{algorithm2e}
 \usepackage{cleveref}
 \crefname{equation}{Equation.}{Equations.}
 \crefname{figure}{Figure}{Figures.}
-
 \usepackage{lipsum}
 \usepackage{wrapfig}
 \usepackage{tikz}
@@ -39,42 +34,49 @@
 \begin{document}
 
 \title{Forecast-Informed Deep Learning for Electricity Price Prediction in the Australian NEM}
-\author{Group 12 \\
+
+\author{Group 12 \\\\
 Connor Kikkert (s4748070) $\cdot$
 Connor McAreavey (s4884456) $\cdot$
-Tyreece Paul (s4883782) \\
+Tyreece Paul (s4883782) \\\\
 John Pioc (s4775725) $\cdot$ Massimo Spadaro (s4850133)}
 
 \date{}
 \maketitle
 
 \begin{abstract}
-	This is an application focused project on spot electricity prices in Australia's National Electricity Market (NEM), 
-	which are highly volatile, non-stationary and prone to extreme price spikes. Using publicly available
-	AEMO market data, we implement and evaluate deep learning architectures for spot price
-	forecasting across the five NEM regions ingested via model pipeline. We benchmark forecasting performance against AEMO's official predictions
-	to assess whether deep learning approaches can outperform them. 
+Spot electricity prices in Australia's National Electricity Market (NEM) are highly
+volatile, non-stationary, and prone to extreme price spikes. Using publicly available
+AEMO market and forecast data, we propose to implement and evaluate deep learning
+architectures for price forecasting across the five NEM regions, building from the
+recurrent and convolutional models covered in this course towards a graph-attention,
+multi-task architecture inspired by \citet{li2025mgaal}, benchmarked against the
+comparison of \citet{gani2026deeptime}.
 \end{abstract}
 
 \section{Topic}
 
-We propose to implement a deep learning-based short-term electricity price forecasting
-system for the Australian NEM, which comprises five interconnected regional markets (NSW,
-QLD, SA, TAS, VIC). We will implement and compare a series of models, forecasting spot
-prices at 5-minute, 30-minute and 60-minute horizons. This will include standard deep
-learning baselines (MLP, LSTM, Boosting, self-attention/Transformer models) with
-parameter fine-tuning, creating a collection of models and experimenting with different
-architectures to determine the best performing model. All models will be trained on
-identical data splits and evaluated using the same metrics (MAE, RMSE, sMAPE and
-directional accuracy), with a focus on performance during extreme and negative price
-events. This methodology was inspired by the benchmarking approach of
-\citet{gani2026deeptime}, which tests whether increased model complexity correlates with
-improved performance on volatile, regime-switching electricity price series, while relating
-our findings to the concepts covered in the course. Our objective is to outperform a naive 
-persistence benchmark and AEMO's own published projections whilst using them as model inputs.
-AEMO releases five-minute pre-dispatch (P5MIN) projections of price, demand and available 
-generation for the coming hour, yet neither reference study uses them, which is where the 
-novelty in our project lies.
+We propose to implement a deep-learning based short-term electricity price forecasting
+system for the Australian NEM, which is composed of five interconnected regional markets
+(NSW, QLD, SA, TAS, VIC). We will adapt a simplified version of the multi-task graph
+adaptive learning (MGAAL) model of \citet{li2025mgaal}, which frames price forecasting
+as a multi-task problem: a primary regression task predicting a future regional price,
+and an auxiliary classification task predicting anomalous price-spike events, with the
+two tasks sharing graph-attention and LSTM-based spatiotemporal feature extraction. The
+graph-attention component treats each NEM region's price series as a node in a graph and
+learns attention weights that capture relationships between regional markets, while LSTM
+layers capture longer-range temporal dependencies. Historical realised market data will
+be obtained using \texttt{NEMOSIS}, while historical AEMO ahead-process forecast data
+will be obtained using \texttt{NEMSEER} and aligned by forecast issue time to avoid
+look-ahead leakage. We will then compare the designed model against a set of standard
+deep learning baselines (MLP, CNN, LSTM, CNN-LSTM, and a self-attention/Transformer
+model) trained on the same data splits, forecast horizons (day-ahead and two-day-ahead),
+and evaluation metrics (MAE, RMSE, sMAPE, and directional accuracy), with particular
+attention to performance during extreme and negative price events. This methodology is
+inspired by the benchmarking approach of \citet{gani2026deeptime}, and directly tests
+whether an increase in model complexity correlates with better performance on volatile,
+regime-switching electricity price series, while relating our findings to concepts
+covered in the course.
 
 \section{Significance}
 
@@ -83,49 +85,71 @@ rates, so when prices swing wildly, retailers take the hit directly, which can t
 both their finances and the stability of the grid \citep{li2025mgaal}. Between October
 2021 and January 2022, average NEM spot prices were almost four times higher than the
 year before and peaked at \$14{,}000/MWh \citep{li2025mgaal}. More recent data from
-2023--2025 shows this hasn't gone away: growing solar uptake now pushes midday prices
-negative on a large share of intervals, and the evening ramp as solar output drops off
-is still a major source of extreme price spikes \citep{gani2026deeptime}. Being able to
-forecast prices accurately in these conditions is useful for retailers managing risk,
-generators deciding when to bid and system operators trying to keep enough reserve
-capacity on hand. \citet{gani2026deeptime} found that several recent state-of-the-art time-series models
-(TimesNet, iTransformer, TimeMixer), despite being top performers on standard, fairly
-stable benchmark datasets, are often beaten by much simpler recurrent and convolutional
-models once tested on real NEM data with actual volatility, structural breaks and
-negative prices. This shows that a bigger or more complex model isn't automatically
-better; what matters instead is whether a model's assumptions, like explicit spatial
-structure, sensible loss design, or multi-task regularisation, fit the statistical
-behaviour of the data it's being used on.
+2023--2025 shows this hasn't gone away: increased renewable penetration has contributed
+to negative prices, steeper ramps, and higher short-term volatility, with intraday
+analysis showing elevated midday negative-price occurrence and evening volatility as
+solar output declines \citep{gani2026deeptime}. Being able to forecast prices accurately
+in these conditions is useful for retailers managing risk, generators deciding when to
+bid and system operators trying to keep enough reserve capacity on hand.
+\citet{gani2026deeptime} found that several recent state-of-the-art time-series models
+(including TimesNet, iTransformer, and TimeMixer) are often beaten by much simpler
+recurrent and convolutional models once tested on real NEM data with actual volatility,
+structural breaks and negative prices. This shows that a bigger or more complex model
+isn't automatically better; what matters instead is whether a model's assumptions, like
+explicit spatial structure, sensible loss design, or multi-task regularisation, fit the
+statistical behaviour of the data it's being used on.
 
 \section{Feasibility}
 
-\textbf{Data and Pipeline:} We use the AEMO public dataset, which publishes historical
-Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data at
-5-minute resolution for all five NEM regions. Over the past four weeks we have built a full
-data pipeline that fetches and caches this data, including dispatch price, demand/generation,
-interconnector, and P5MIN forecast series, using \texttt{NEMOSIS} and \texttt{NEMSEER}.
-The pipeline constructs a shared feature set (lags, rolling statistics, reserve margins, and
-AEMO forecast alignment) through a common model interface, and handles chronological
-train/validation/test splitting with a forecast-horizon embargo to ensure consistent,
-leakage-free data preparation for all models going forward ensuring consistent experimentation
-within our methodology.\\
-\textbf{Accomplished So Far:} We have implemented three baseline deep models, an MLP
-regressor, XGBoost regressor, and a standard Transformer \citep{vaswani2017attention},
-currently configured for 30-minute price forecasting on the QLD and NSW regions. 
-\begin{itemize}
-	\item Transformer follows the classical architecture, with tabular data encoded into a sequential
-form via a linear layer projecting the 1-dimensional input into a 64-dimensional embedding
-before being fed into the Transformer. 
-\end{itemize}
-The full pipeline described above has been implemented and used to train all three models.
-\textbf{Planned Work:}\\
-\textbf{Evaluation:}\\
-\textbf{Risk and Mitigation:} Compute time and budget for training models is a key risk,
-mitigated by training on UQ's Rangpur HPC cluster for GPU resources. Model complexity risk
-is mitigated by implementing simpler baseline models first before moving to more
-sophisticated models, building an understanding of baseline performance before adding
-complexity. Timeline risk is mitigated by aligning our planned goals with the weekly course
-content, so we consider the project feasible within the semester timeline.
+\textbf{Data.} Both reference papers draw on data from AEMO, which publishes historical
+Regional Reference Price (RRP), demand, generation, and inter-regional power-flow data
+at 5-minute resolution for all five NEM regions, as well as outputs from its ahead-process
+forecasting systems. \citet{gani2026deeptime} retrieve RRP data programmatically from
+AEMO using the \texttt{nemdatatools} Python library and share their source code, dataset,
+and supplementary materials on GitHub, while \citet{li2025mgaal} use regional price,
+demand, generation, power-flow, 28-day average-price, and time features. We will use
+\texttt{NEMOSIS}, a Python package for downloading and processing historical AEMO market
+data, to retrieve the AEMO tables needed to construct realised price, demand, generation,
+and inter-regional flow series, and \texttt{NEMSEER} to obtain historical AEMO
+ahead-process forecast data such as pre-dispatch outputs. These sources will be combined
+and timestamp-aligned to build the feature set for all five regions, giving us a large,
+recent, publicly available dataset without writing custom data-download code. \\
+
+\textbf{What has already been done.} Over the past four weeks we have reviewed both
+papers in detail, including their data pipelines, architectures, and evaluation
+methodology, confirmed that the code and data of \citet{gani2026deeptime} are openly
+available as a reproducibility reference, and set up a
+\texttt{NEMOSIS}/\texttt{NEMSEER}-based data pipeline as the first step of our own
+implementation. \\
+
+\textbf{Planned work.} We have split into parallel workstreams and organised the
+implementation into two-week sprints, so each stage exercises concepts covered in
+lectures. Sprint~1 (Weeks~6--7, 31/08--13/09) covers data retrieval and preprocessing
+with \texttt{NEMOSIS} and \texttt{NEMSEER}; implementation of an MLP, a Temporal
+Convolutional Network, a Transformer, an LSTM, and a Gradient Boosting baseline as a
+non-deep-learning reference point; a shared evaluation pipeline reporting MAE, RMSE,
+sMAPE, and directional accuracy so every model is scored consistently; and finalising
+this proposal. This spans course content from data preparation and model selection
+through to gradient-based learning, convolutional and recurrent architectures, and
+attention mechanisms. Sprints~2--3 (Weeks~8--9) then consolidate evaluation across the
+Sprint~1 models and move on to the harder graph-attention multi-task model inspired by
+\citet{li2025mgaal}, applying course content on optimisation and regularisation before
+building the graph-neural-network layers and the multi-task loss with learned task
+weights. \\
+
+\textbf{Evaluation.} We will report MAE, RMSE, sMAPE, and mean directional accuracy on
+day-ahead and two-day-ahead horizons, with a dedicated breakdown for the upper/lower 5\%
+price tail and negative-price intervals, following \citet{gani2026deeptime}, and
+weighted-F1 for the auxiliary spike-classification task once the multi-task model is
+implemented, following \citet{li2025mgaal}.\\
+\textbf{Risks and mitigation.} The main risks are compute budget for training six model
+families across five regions and two horizons, mitigated by training on UQ's Rangpur HPC
+cluster for GPU resources well beyond a personal machine, and the added complexity of
+the graph-attention model, which is deliberately scheduled for Weeks~8--9 so a working
+set of simpler baselines and a shared evaluation pipeline already exist first. Given the
+public data, the \texttt{NEMOSIS}/\texttt{NEMSEER} pipeline, the available reference
+implementation from \citet{gani2026deeptime}, and the sprint plan's alignment with weekly
+course content, we consider the project feasible within the semester timeline.
 
 \smaller
 \printbibliography
