@@ -109,6 +109,7 @@ class ExperimentData:
     prepared: PreparedModelData
     fit_df: pd.DataFrame
     validation_df: pd.DataFrame
+    test_df: pd.DataFrame
 
     @property
     def features(self) -> list[str]:
@@ -198,6 +199,7 @@ def prepare_experiment(
         prepared=prepared,
         fit_df=fit_df,
         validation_df=validation_df,
+        test_df=prepared.test_df
     )
 
 
