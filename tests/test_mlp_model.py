@@ -22,6 +22,8 @@ def test_mlp_receives_named_hyperparameters():
         weight_decay=1e-5,
         batch_size=4,
         max_epochs=2,
+        patience=2,
+        min_delta=0.01,
         loss="mae",
         device="cpu",
     )
@@ -32,6 +34,8 @@ def test_mlp_receives_named_hyperparameters():
     assert model.weight_decay == 1e-5
     assert model.batch_size == 4
     assert model.max_epochs == 2
+    assert model.patience == 2
+    assert model.min_delta == 0.01
     assert model.loss == "mae"
 
 
@@ -117,3 +121,39 @@ def test_mlp_trains_and_predicts_all_rows_with_missing_features():
     assert predictions.shape == (2,)
     assert np.isfinite(predictions).all()
     assert len(model.training_loss_history) == 2
+
+
+def test_mlp_early_stops_and_restores_best_validation_epoch(monkeypatch):
+    x_train = pd.DataFrame({"feature": [0.0, 1.0, 2.0, 3.0]})
+    y_train = pd.Series([0.0, 1.0, 2.0, 3.0])
+    x_validation = pd.DataFrame({"feature": [4.0, 5.0]})
+    y_validation = pd.Series([4.0, 5.0])
+    validation_scores = iter([5.0, 4.0, 4.0, 4.0, 3.0])
+    model = MLPModel(
+        hidden_sizes=(4,),
+        dropout=0.0,
+        batch_size=2,
+        max_epochs=10,
+        patience=2,
+        min_delta=0.001,
+        device="cpu",
+    )
+    monkeypatch.setattr(
+        model,
+        "_validation_mae",
+        lambda *args: next(validation_scores),
+    )
+
+    result = model.train_with_validation(
+        x_train,
+        y_train,
+        x_validation,
+        y_validation,
+    )
+
+    assert model.best_epoch == 2
+    assert model.stopped_epoch == 4
+    assert len(model.training_loss_history) == 4
+    assert model.validation_mae_history == [5.0, 4.0, 4.0, 4.0]
+    assert result is model.training_result
+    assert result.best_epoch == 2

@@ -12,6 +12,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from pipeline.model import Model
+from pipeline.training import TrainingResult, TorchEarlyStoppingTrainer
 from pipeline.preprocessing import (
     NumericPreprocessor,
     TargetTransformer,
@@ -69,6 +70,8 @@ class MLPModel(Model):
         batch_size: int = 256,
         prediction_batch_size: int = 1024,
         max_epochs: int = 30,
+        patience: int = 3,
+        min_delta: float = 0.001,
         loss: str = "huber",
         huber_delta: float = 1.0,
         random_seed: int = 42,
@@ -89,6 +92,10 @@ class MLPModel(Model):
             raise ValueError("learning_rate must be positive and weight_decay non-negative")
         if batch_size <= 0 or prediction_batch_size <= 0 or max_epochs <= 0:
             raise ValueError("batch sizes and max_epochs must be positive")
+        if patience <= 0:
+            raise ValueError("patience must be positive")
+        if min_delta < 0:
+            raise ValueError("min_delta must be non-negative")
         loss = loss.lower()
         if loss not in {"huber", "mse", "mae"}:
             raise ValueError("loss must be 'huber', 'mse', or 'mae'")
@@ -102,6 +109,8 @@ class MLPModel(Model):
         self.batch_size = int(batch_size)
         self.prediction_batch_size = int(prediction_batch_size)
         self.max_epochs = int(max_epochs)
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
         self.loss = loss
         self.huber_delta = float(huber_delta)
         self.random_seed = int(random_seed)
@@ -115,6 +124,10 @@ class MLPModel(Model):
         self.feature_columns: list[str] = []
         self.feature_medians: pd.Series | None = None
         self.training_loss_history: list[float] = []
+        self.validation_mae_history: list[float] = []
+        self.best_epoch: int | None = None
+        self.stopped_epoch: int | None = None
+        self.training_result: TrainingResult | None = None
 
     def _set_random_seed(self) -> None:
         random.seed(self.random_seed)
@@ -149,10 +162,39 @@ class MLPModel(Model):
         return numeric.fillna(self.feature_medians)
 
     def train(self, x_train: pd.DataFrame, y_train: pd.Series) -> None:
+        self._train(x_train, y_train)
+
+    def train_with_validation(
+        self,
+        x_train: pd.DataFrame,
+        y_train: pd.Series,
+        x_validation: pd.DataFrame,
+        y_validation: pd.Series,
+    ) -> TrainingResult:
+        result = self._train(
+            x_train,
+            y_train,
+            x_validation=x_validation,
+            y_validation=y_validation,
+        )
+        return result
+
+    def _train(
+        self,
+        x_train: pd.DataFrame,
+        y_train: pd.Series,
+        *,
+        x_validation: pd.DataFrame | None = None,
+        y_validation: pd.Series | None = None,
+    ) -> TrainingResult:
         if x_train.empty:
             raise ValueError("x_train must contain at least one row")
         if len(x_train) != len(y_train):
             raise ValueError("x_train and y_train must have the same number of rows")
+        if (x_validation is None) != (y_validation is None):
+            raise ValueError(
+                "x_validation and y_validation must either both be provided or omitted"
+            )
 
         target = pd.to_numeric(y_train, errors="coerce").replace(
             [np.inf, -np.inf], np.nan
@@ -182,6 +224,35 @@ class MLPModel(Model):
         )
         targets = torch.tensor(scaled_target, dtype=torch.float32).reshape(-1, 1)
 
+        validation_inputs: torch.Tensor | None = None
+        validation_actual: np.ndarray | None = None
+        if x_validation is not None and y_validation is not None:
+            if x_validation.empty:
+                raise ValueError("x_validation must contain at least one row")
+            if len(x_validation) != len(y_validation):
+                raise ValueError(
+                    "x_validation and y_validation must have the same number of rows"
+                )
+            validation_target = pd.to_numeric(
+                y_validation, errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
+            valid_validation_target = validation_target.notna().to_numpy()
+            if not valid_validation_target.any():
+                raise ValueError("y_validation contains no finite targets")
+            validation_features = self._impute_features(
+                x_validation.loc[valid_validation_target]
+            )
+            scaled_validation_features = self.preprocessor.transform(
+                validation_features
+            )
+            validation_inputs = torch.tensor(
+                scaled_validation_features.to_numpy(dtype=np.float32),
+                dtype=torch.float32,
+            )
+            validation_actual = validation_target.loc[
+                valid_validation_target
+            ].to_numpy(dtype=float)
+
         self._set_random_seed()
         self.network = FeedForwardNetwork(
             n_features=len(self.feature_columns),
@@ -203,8 +274,7 @@ class MLPModel(Model):
             weight_decay=self.weight_decay,
         )
 
-        self.training_loss_history = []
-        for _ in range(self.max_epochs):
+        def train_epoch() -> float:
             self.network.train()
             total_loss = 0.0
             for input_batch, target_batch in loader:
@@ -216,7 +286,55 @@ class MLPModel(Model):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * len(input_batch)
-            self.training_loss_history.append(total_loss / len(inputs))
+            return total_loss / len(inputs)
+
+        validation_callback = None
+        if validation_inputs is not None and validation_actual is not None:
+            validation_callback = lambda: self._validation_mae(
+                validation_inputs,
+                validation_actual,
+            )
+
+        trainer = TorchEarlyStoppingTrainer(
+            max_epochs=self.max_epochs,
+            patience=self.patience,
+            min_delta=self.min_delta,
+        )
+        result = trainer.fit(
+            network=self.network,
+            train_epoch=train_epoch,
+            validation_score=validation_callback,
+        )
+        self.training_result = result
+        self.training_loss_history = result.training_loss_history
+        self.validation_mae_history = result.validation_score_history
+        self.best_epoch = result.best_epoch
+        self.stopped_epoch = result.stopped_epoch
+        return result
+
+    def _validation_mae(
+        self,
+        inputs: torch.Tensor,
+        actual: np.ndarray,
+    ) -> float:
+        if self.network is None or self.target_transformer is None:
+            raise RuntimeError("The model must be initialised before validation")
+
+        loader = DataLoader(
+            TensorDataset(inputs),
+            batch_size=self.prediction_batch_size,
+            shuffle=False,
+        )
+        self.network.eval()
+        prediction_batches: list[np.ndarray] = []
+        with torch.no_grad():
+            for (input_batch,) in loader:
+                predictions = self.network(input_batch.to(self.device))
+                prediction_batches.append(predictions.cpu().numpy())
+
+        transformed = np.concatenate(prediction_batches).reshape(-1)
+        predicted = self.target_transformer.inverse_transform(transformed)
+        return float(np.mean(np.abs(actual - predicted)))
 
     def predict(self, x_test: pd.DataFrame) -> np.ndarray:
         if self.network is None or self.preprocessor is None:

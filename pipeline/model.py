@@ -1,6 +1,13 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from pipeline.training import TrainingResult
 
 class Model(ABC):
 
@@ -13,6 +20,22 @@ class Model(ABC):
     @abstractmethod
     def train(self, x_train: pd.DataFrame, y_train: pd.Series) -> None:
         pass
+
+    def train_with_validation(
+        self,
+        x_train: pd.DataFrame,
+        y_train: pd.Series,
+        x_validation: pd.DataFrame,
+        y_validation: pd.Series,
+    ) -> TrainingResult | None:
+        """Train with optional validation support.
+
+        Models without an internal validation procedure retain the ordinary
+        training behaviour. Models such as the MLP can override this method
+        to implement checkpointing and early stopping.
+        """
+        self.train(x_train, y_train)
+        return None
 
     @abstractmethod
     def predict(self, x_test: pd.DataFrame) -> np.ndarray:

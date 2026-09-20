@@ -132,3 +132,50 @@ def test_search_rejects_partial_non_finite_predictions():
             experiment,
             verbose=False,
         )
+
+
+def test_search_uses_selected_early_stopping_epoch_for_final_config():
+    experiment = experiment_fixture()
+    observed = {}
+
+    class EarlyStoppingModel:
+        model_name = "Early stopping model"
+
+        def __init__(self, max_epochs, patience, min_delta):
+            observed["configured_max_epochs"] = max_epochs
+            self.best_epoch = None
+
+        def train_with_validation(
+            self,
+            x_train,
+            y_train,
+            x_validation,
+            y_validation,
+        ):
+            observed["validation_rows"] = len(x_validation)
+            return SimpleNamespace(best_epoch=7)
+
+        def predict(self, x_validation):
+            return experiment.validation_df["target"].to_numpy()
+
+        def get_model_name(self):
+            return self.model_name
+
+    result = search_hyperparameters(
+        EarlyStoppingModel,
+        {
+            "max_epochs": [30],
+            "patience": [3],
+            "min_delta": [0.001],
+        },
+        experiment,
+        verbose=False,
+    )
+
+    assert observed == {"configured_max_epochs": 30, "validation_rows": 2}
+    assert result.best_config == {
+        "max_epochs": 7,
+        "patience": 3,
+        "min_delta": 0.001,
+    }
+    assert result.trials.loc[0, "selected_epoch"] == 7

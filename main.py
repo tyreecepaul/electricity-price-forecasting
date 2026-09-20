@@ -41,14 +41,16 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
         {
             "hidden_sizes": [(128, 64, 32)],
             "dropout": [(0.2, 0.15, 0.0)],
-            "learning_rate": [3e-4, 1e-3],
-            "weight_decay": [1e-4],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
             "batch_size": [256],
-            "max_epochs": [5],
-            "loss": ["huber", "mse", "mae"],
+            "max_epochs": [30],
+            "patience": [3],
+            "min_delta": [0.001],
+            "loss": ["huber"],
             "huber_delta": [1.0],
             "random_seed": [42],
-        },
+        }
     ),
 ]
 

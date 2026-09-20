@@ -38,6 +38,7 @@ def search_hyperparameters(
     y_train: pd.Series = fit_df["target"]
 
     x_val: pd.DataFrame = validation_df[features]
+    y_val_series: pd.Series = validation_df["target"]
     y_val: np.ndarray = validation_df["target"].to_numpy()
 
     candidates: list[dict[str, Any]] = [
@@ -53,7 +54,17 @@ def search_hyperparameters(
     for position, config in enumerate(candidates, start=1):
         try:
             model: Model = model_factory(**config)
-            model.train(x_train, y_train)
+            validation_trainer = getattr(model, "train_with_validation", None)
+            if validation_trainer is None:
+                model.train(x_train, y_train)
+                training_result = None
+            else:
+                training_result = validation_trainer(
+                    x_train,
+                    y_train,
+                    x_val,
+                    y_val_series,
+                )
             y_pred: np.ndarray = model.predict(x_val)
             result: ModelResult = evaluate(model, y_val, y_pred)
 
@@ -65,10 +76,12 @@ def search_hyperparameters(
 
             metrics = result.metrics
             n_rows: int = int(result.valid_mask.sum())
+            selected_epoch = getattr(training_result, "best_epoch", None)
             error = ""
         except Exception as exception:
             metrics: dict[str, float] = { name: float("nan") for name in METRIC_NAMES }
             n_rows = 0
+            selected_epoch = None
             error = f"{ type(exception).__name__ }: {exception}"
 
         records.append({
@@ -76,11 +89,14 @@ def search_hyperparameters(
             **config,
             **metrics,
             "n_rows": n_rows,
+            "selected_epoch": selected_epoch,
             "error": error
         })
 
         if verbose:
             outcome: str = error if error else f"{metric}={metrics[metric]:.3f}"
+            if not error and selected_epoch is not None:
+                outcome += f" (best epoch {selected_epoch})"
             print(f"[{position}/{len(candidates)}] : {outcome}")
 
     trials: pd.DataFrame = pd.DataFrame.from_records(records)
@@ -89,7 +105,10 @@ def search_hyperparameters(
         raise RuntimeError("No configuration produced a usable score")
 
     best_row = scored.loc[scored[metric].idxmin()]
-    best_config: dict[str, Any] = candidates[int(best_row["trial"]) - 1]
+    best_config: dict[str, Any] = candidates[int(best_row["trial"]) - 1].copy()
+    selected_epoch = best_row.get("selected_epoch")
+    if "max_epochs" in best_config and pd.notna(selected_epoch):
+        best_config["max_epochs"] = int(selected_epoch)
     best_score: float = float(best_row[metric])
 
     if verbose:
