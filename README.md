@@ -17,6 +17,27 @@
 - Report 20%  due 5pm 9 Nov
 - Reflective essay (I think individual) 5% due 5pm 10th Nov
 
+## Running an Experiment
+
+Configure `EXPERIMENT` and `MODEL_REGISTRY` in `main.py`, then run:
+
+```bash
+python main.py
+```
+
+`ExperimentConfig` selects the NEM region, forecast horizon, target type,
+features, and validation fraction. Each `MODEL_REGISTRY` entry contains a
+`Model` implementation and its hyperparameter grid. The pipeline prepares and
+caches the data, performs a chronological validation search, retrains the best
+configuration on all pre-test data, and evaluates reconstructed RRP forecasts
+on the held-out test period.
+
+Supported targets are `change`, `price`, and `aemo_error`. Run the checks with:
+
+```bash
+python -m pytest -q
+```
+
 ## Git/Github Conventions
 
 ### Branches

@@ -17,4 +17,26 @@ __pycache__/
 *.hdf5
 *.nc
 
-pipeline/data_cleaning/nemosis_cache
+pipeline/data_cleaning/nemosis_cache/
+
+docs/proposal/*.aux
+docs/proposal/*.fdb_latexmk
+docs/proposal/*.fls
+docs/proposal/*.log
+docs/proposal/*.bib
+docs/proposal/*.out
+docs/proposal/*.bbl
+docs/proposal/*.blg
+docs/proposal/*.xml
+docs/proposal/*.gz
+
+docs/report/*.aux
+docs/report/*.fdb_latexmk
+docs/report/*.fls
+docs/report/*.log
+docs/report/*.bib
+docs/report/*.out
+docs/report/*.bbl
+docs/report/*.blg
+docs/report/*.xml
+docs/report/*.gz
