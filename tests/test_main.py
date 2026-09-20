@@ -131,6 +131,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
     monkeypatch.setattr(module, "reconstruct_price_forecast", fake_reconstruct)
     monkeypatch.setattr(module, "evaluate", fake_evaluate)
+    monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
 
     module.main()
 

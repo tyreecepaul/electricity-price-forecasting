@@ -1,7 +1,7 @@
 import argparse
 from electricity_price_forecasting_model.xgboost import XGBoostModel
 from electricity_price_forecasting_model.mlp import MLPModel
-from pipeline.evaluation import ModelResult, evaluate
+from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
     ExperimentConfig,
     prepare_experiment,
@@ -130,7 +130,7 @@ def main(selected_models: Sequence[str] | None = None) -> None:
 
         results.append(result)
 
-    print(results)
+    print_evaluation_summary(results, prepared)
 
 if __name__ == "__main__":
     cli_args = parse_args()
