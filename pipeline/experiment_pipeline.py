@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from preprocessing import PreparedModelData, prepare_model_data
+from pipeline.preprocessing import PreparedModelData, prepare_model_data
 
 
 TargetType = Literal["change", "price", "aemo_error"]
@@ -109,6 +109,7 @@ class ExperimentData:
     prepared: PreparedModelData
     fit_df: pd.DataFrame
     validation_df: pd.DataFrame
+    test_df: pd.DataFrame
 
     @property
     def features(self) -> list[str]:
@@ -198,6 +199,7 @@ def prepare_experiment(
         prepared=prepared,
         fit_df=fit_df,
         validation_df=validation_df,
+        test_df=prepared.test_df
     )
 
 

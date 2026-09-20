@@ -176,7 +176,7 @@ def prepare_model_data(
 
         # Lazy import keeps the lower-level preprocessing modules independent of
         # the ingestion implementation until this convenience function is used.
-        from data_cleaning.data import getTrainTestData
+        from pipeline.data_cleaning.data import getTrainTestData
 
         train_data, test_data = getTrainTestData()
 

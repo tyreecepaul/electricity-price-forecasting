@@ -1,303 +1,395 @@
-## Directory structure
+# Forecast-Informed Electricity Price Forecasting
+
+This STAT3007/7007 project forecasts five-minute Regional Reference Prices
+(RRP) in Australia's National Electricity Market. It combines historical AEMO
+dispatch data, interconnector conditions, and aligned P5MIN forecasts in a
+shared experiment pipeline for tree-based and deep-learning models.
+
+## Quick Start
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py
 ```
+
+The first run may download and process several years of AEMO data. Raw data and
+prepared experiment data are cached for later runs.
+
+Run the test suite with:
+
+```bash
+python -m pytest -q
+```
+
+## Running an Experiment
+
+Configure the experiment and model grid in `main.py`:
+
+```python
+EXPERIMENT = ExperimentConfig(
+    region="NSW1",
+    horizon_minutes=30,
+    target_type="change",
+    model_features="all",
+    validation_fraction=0.20,
+)
+
+MODEL_REGISTRY = [
+    (
+        XGBoostModel,
+        {
+            "max_depth": [3, 4, 6],
+            "learning_rate": [0.03, 0.1],
+            "min_child_weight": [4, 8],
+        },
+    )
+]
+```
+
+`python main.py` then:
+
+1. loads or builds leakage-safe model data;
+2. creates a chronological fit/validation split with a forecast-horizon embargo;
+3. searches each model's hyperparameter grid on the validation period;
+4. retrains the selected configuration on all pre-test training data;
+5. reconstructs target-scale predictions into RRP forecasts; and
+6. evaluates the forecasts once on the held-out test period.
+
+### Target Types
+
+| Value | Model target | Price reconstruction |
+| --- | --- | --- |
+| `change` | future RRP minus current RRP | current RRP plus predicted change |
+| `price` | future RRP | prediction is already an RRP forecast |
+| `aemo_error` | future RRP minus aligned AEMO P5MIN RRP | AEMO forecast plus predicted error |
+
+`model_features="all"` uses the standard engineered feature set. Pass a list
+of column names to run a feature-specific experiment.
+
+## Data Pipeline
+
+`pipeline/data_cleaning/data.py` loads the following source tables:
+
+- `DISPATCHPRICE`;
+- `DISPATCHREGIONSUM`;
+- `DISPATCHINTERCONNECTORRES`; and
+- P5MIN `REGIONSOLUTION` forecasts.
+
+The ingestion defaults cover all five NEM regions from 1 January 2022 to
+31 July 2026. The final 20% of the requested period is reserved as the
+chronological test split. `main.py` currently selects `NSW1` from that data.
+
+Use the joint loader when working directly with raw data:
+
+```python
+from datetime import datetime
+
+from pipeline.data_cleaning.data import getTrainTestData
+
+train, test = getTrainTestData(
+    regions=["NSW1"],
+    start=datetime(2024, 1, 1),
+    end=datetime(2024, 12, 31),
+)
+```
+
+The preprocessing package joins the source tables and constructs price and
+demand lags, rolling statistics, reserve measures, calendar features,
+interconnector utilisation, aligned P5MIN features, and future targets. It
+matches future targets by timestamp rather than row offset.
+
+## Public Data Shapes
+
+### Raw ingestion
+
+```python
+@dataclass
+class Data:
+    prices: pd.DataFrame
+    region_summary: pd.DataFrame
+    interconnectors: pd.DataFrame | None
+    p5min: pd.DataFrame | None
+    regions: list[str]
+    start: datetime
+    end: datetime
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self.prices
+```
+
+`Data.df` is retained for compatibility and aliases the raw price table. It is
+not the joined or feature-engineered model frame.
+
+### Prepared model data
+
+```python
+@dataclass
+class PreparedModelData:
+    X_train: pd.DataFrame
+    y_train: pd.Series
+    X_test: pd.DataFrame
+    y_test: pd.Series
+    train_df: pd.DataFrame
+    test_df: pd.DataFrame
+    features: list[str]
+    region: str
+    horizon: int
+    target_type: str
+```
+
+`X_train` and `X_test` contain exactly the selected model features. The full
+frames also contain metadata, current `rrp`, future `target_rrp`, and the
+configured `target`.
+
+### Experiment data
+
+```python
+@dataclass(frozen=True)
+class ExperimentConfig:
+    region: str = "NSW1"
+    horizon_minutes: int = 60
+    target_type: Literal["change", "price", "aemo_error"] = "change"
+    model_features: Literal["all"] | Sequence[str] = "all"
+    validation_fraction: float = 0.15
+    cache_directory: Path = ...
+
+
+@dataclass(frozen=True)
+class ExperimentData:
+    config: ExperimentConfig
+    prepared: PreparedModelData
+    fit_df: pd.DataFrame
+    validation_df: pd.DataFrame
+    test_df: pd.DataFrame
+
+    @property
+    def features(self) -> list[str]: ...
+```
+
+`prepare_experiment(config, force_refresh=False)` returns `ExperimentData`.
+Set `force_refresh=True` when cached prepared data must be rebuilt.
+
+## Model, Tuning, and Evaluation Contracts
+
+Every production model implements:
+
+```python
+class Model(ABC):
+    model_name: str
+
+    def __init__(self, **model_params) -> None: ...
+    def train(self, x_train: pd.DataFrame, y_train: pd.Series) -> None: ...
+    def predict(self, x_test: pd.DataFrame) -> np.ndarray: ...
+    def get_model_name(self) -> str: ...
+```
+
+### Adding a Model Step by Step
+
+#### 1. Create the model module
+
+Add a Python file under `electricity_price_forecasting_model/`. The following
+complete example wraps scikit-learn's histogram gradient boosting regressor,
+which can consume the missing feature values retained by the shared pipeline.
+
+```python
+# electricity_price_forecasting_model/hist_gradient_boosting.py
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+from pipeline.model import Model
+
+
+class HistGradientBoostingModel(Model):
+    model_name = "HistGradientBoosting"
+
+    def __init__(
+        self,
+        learning_rate: float = 0.1,
+        max_iter: int = 100,
+        max_leaf_nodes: int = 31,
+        l2_regularization: float = 0.0,
+    ) -> None:
+        self.model = HistGradientBoostingRegressor(
+            learning_rate=learning_rate,
+            max_iter=max_iter,
+            max_leaf_nodes=max_leaf_nodes,
+            l2_regularization=l2_regularization,
+            random_state=42,
+        )
+
+    def train(
+        self,
+        x_train: pd.DataFrame,
+        y_train: pd.Series,
+    ) -> None:
+        self.model.fit(x_train, y_train)
+
+    def predict(self, x_test: pd.DataFrame) -> np.ndarray:
+        return self.model.predict(x_test)
+```
+
+The wrapper must obey four rules:
+
+- define a stable `model_name`;
+- accept every tunable value as a named constructor argument;
+- fit preprocessing only from `x_train` and `y_train`; and
+- return one target-scale prediction per input row from `predict()`.
+
+The prediction must remain on the configured target scale. For example, a
+`change` experiment returns predicted price changes. `main.py` performs the
+final conversion back to RRP.
+
+Models that cannot consume missing values must fit and store an imputer inside
+`train()`, then reuse it in `predict()`. Neural models may similarly fit a
+`NumericPreprocessor` and `TargetTransformer` on training data only; they must
+inverse-transform their predictions before returning them.
+
+#### 2. Import the model in `main.py`
+
+```python
+from electricity_price_forecasting_model.hist_gradient_boosting import (
+    HistGradientBoostingModel,
+)
+```
+
+#### 3. Add the class and its grid to `MODEL_REGISTRY`
+
+Register the class itself, not an already-created instance. Grid keys must
+exactly match constructor parameter names, and every grid value must be a
+sequence.
+
+```python
+MODEL_REGISTRY = [
+    (
+        XGBoostModel,
+        {
+            "max_depth": [3, 4, 6],
+            "learning_rate": [0.03, 0.1],
+            "min_child_weight": [4, 8],
+        },
+    ),
+    (
+        HistGradientBoostingModel,
+        {
+            "learning_rate": [0.03, 0.1],
+            "max_iter": [100, 300],
+            "max_leaf_nodes": [15, 31],
+            "l2_regularization": [0.0, 1.0],
+        },
+    ),
+]
+```
+
+This example evaluates 2 x 2 x 2 x 2 = 16 configurations for
+`HistGradientBoostingModel`. Keep the first grid small when checking a new
+model.
+
+#### 4. Select the shared experiment
+
+All registered models receive the same region, horizon, target, features, and
+chronological splits from `EXPERIMENT`:
+
+```python
+EXPERIMENT = ExperimentConfig(
+    region="NSW1",
+    horizon_minutes=30,
+    target_type="change",
+    model_features="all",
+    validation_fraction=0.20,
+)
+```
+
+Do not load or split data inside the model wrapper. This keeps comparisons
+between models consistent and prevents test-set leakage.
+
+#### 5. Test and run
+
+```bash
+python -m pytest -q
+python main.py
+```
+
+For each registry entry, the pipeline tunes on `fit_df` and `validation_df`,
+recreates the model with `SearchResult.best_config`, trains it on the complete
+pre-test training data, predicts the held-out test rows, reconstructs RRP, and
+stores a `ModelResult`.
+
+Hyperparameter search returns:
+
+```python
+@dataclass
+class SearchResult:
+    best_config: dict
+    best_score: float
+    metric: str
+    trials: pd.DataFrame
+```
+
+The tuner uses `ExperimentData.fit_df` and `validation_df`; it never uses the
+held-out test period for model selection.
+
+Evaluation has the following interface:
+
+```python
+evaluate(
+    model: Model,
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
+) -> ModelResult
+
+
+@dataclass
+class ModelResult:
+    model_name: str
+    predictions: np.ndarray
+    valid_mask: np.ndarray
+    metrics: dict[str, float]
+```
+
+Reported metrics are MAE, RMSE, SSE, and median absolute error. Final model
+evaluation should use reconstructed RRP forecasts against `target_rrp`.
+
+## Repository Layout
+
+```text
 .
-├── assets # contains data sets, course resources, and intresting research papers
-├── data_cleaning # data cleaning scripts
-├── electricity_price_forecasting_model # main training scripts 
-├── model_research # researching directorties for experimentation
-├── notebooks # juptyer notebooks
-├── README.md 
-├── reports # submission latex papers orgonized by milestones
-└── tests # model evaluation and testing
+├── assets/                              course resources and reference papers
+├── docs/                                deliverables, timeline, and workflow docs
+├── electricity_price_forecasting_model/ production model implementations
+├── model_research/                      individual model experiments
+├── notebooks/                           exploratory notebooks
+├── pipeline/
+│   ├── data_cleaning/                   AEMO ingestion and raw caches
+│   ├── preprocessing/                   shared feature and sequence preparation
+│   ├── evaluation.py                    common result metrics
+│   ├── experiment_pipeline.py           experiment preparation and diagnostics
+│   ├── model.py                         abstract model interface
+│   └── tuning.py                        hyperparameter grid search
+├── tests/                               pipeline regression tests
+├── main.py                              experiment entry point
+└── requirements.txt
 ```
 
-## Important Dates
-- Proposal 5% due 5pm 14 Sep
-- Seminar 10% due week 13 (Slide submission as well)
-- Report 20%  due 5pm 9 Nov
-- Reflective essay (I think individual) 5% due 5pm 10th Nov
+See [Git and GitHub conventions](docs/git-and-github-conventions.md) for the
+team workflow.
 
-## Git/Github Conventions
+## Course Deliverables
 
-### Branches
+- Proposal: 5%, due 5 pm 14 September
+- Seminar: 10%, due in week 13
+- Report: 20%, due 5 pm 9 November
+- Individual reflective essay: 5%, due 5 pm 10 November
 
-Two branches are maintained:
+Further assessment details are in [`docs/README.md`](docs/README.md).
 
-| Branch | Role | Protected |
-| --- | --- | --- |
-| `production` | deployable and demo-ready. The repository's default branch. Only release and hotfix pull requests land here. | Yes |
-| `dev` | Integration branch. All day-to-day work merges here first. The base branch for every feature pull request. | Yes |
+## References
 
-Everything else is a short-lived working branch, created from `dev` and deleted once it has merged.
-
-#### Working branch names
-
-```text
-type/issue-number-short-summary
-```
-
-| Type | Use for | Example |
-| --- | --- | --- |
-| `feat/` | A new feature or capability | `feat/12-relay-websocket-handshake` |
-| `fix/` | A bug fix | `fix/34-tether-empty-workspace` |
-| `docs/` | Documentation, ADRs, meeting notes, spec updates | `docs/07-transport-adr` |
-| `refactor/` | Restructuring with no change in behaviour | `refactor/28-shared-message-codec` |
-| `test/` | Adding or updating tests | `test/19-relay-reconnect-coverage` |
-| `chore/` | Tooling, dependencies, repository maintenance | `chore/22-pin-eslint-v10` |
-| `spike/` | Throwaway investigation or proof of concept | `spike/31-webrtc-feasibility` |
-| `hotfix/` | An urgent fix to `production` | `hotfix/41-relay-crash-on-startup` |
-
-Rules:
-
-- Branch from an up-to-date `dev`. Only Hotfixes are allowed to branch from `production`.
-- Each branch **MUST** carry an issue number. It ties the branch to a GitHub issue created, thus clearly showing the work being done.
-- The summary is lowercase kebab-case, two to five words, describing the change.
-
-```bash
-git switch dev
-git pull origin dev
-git switch -c feat/12-relay-websocket-handshake
-```
-
-### Commits
-
-[Conventional Commits](https://www.conventionalcommits.org/) are the standard for commit messages.
-
-```text
-type(scope): subject
-
-Optional body explaining WHY this change was made, not WHAT was changed. 
-```
-
-#### Types
-
-| Type | Use for |
-| --- | --- |
-| `feat` | A new feature or capability |
-| `fix` | A bug fix |
-| `docs` | Documentation only |
-| `style` | Formatting or whitespace, no code change |
-| `refactor` | Restructuring with no change in behaviour |
-| `test` | Adding or updating tests |
-| `chore` | Tooling, dependencies, repository maintenance |
-| `perf` | A performance improvement |
-| `ci` | CI/CD configuration |
-| `revert` | Reverting a previous commit |
-
-#### Scopes
-
-the package or top-level folder the change touches:
-
-`tether`, `relay`, `shared`, `docs`, `spec`, `design`, `evidence`, `deployment`, `repo`
-
-Omit the scope only when a change genuinely spans the whole repository.
-
-#### Subject line
-
-- Imperative mood: `add`, not `added` or `adds`.
-- Lowercase after the colon, no trailing full stop.
-- 72 characters maximum.
-- Describe the change, not the file you edited.
-
-#### Body
-
-- Optional, but write one whenever the reason isn't obvious from the subject.
-- Explain **why** the change was made, not **what** was changed.
-- Wrap at 72 characters.
-
-#### Examples
-
-```text
-feat(relay): add websocket handshake
-```
-
-Avoid: `update`, `fixed stuff`, `WIP`, `final version`, or a subject that names a file (`edit extension.ts`) rather than the change.
-
-### Pull requests
-
-Every change reaches `dev` or `production` through a pull request. These branches should not be pushed directly to.
-
-| Pull request kind | Head branch | Base branch |
-| --- | --- | --- |
-| Feature, fix, docs, chore, and so on | your working branch | `dev` |
-| Release | `dev` | `production` |
-| Hotfix | `hotfix/...` | `production`, then back-merge to `dev` |
-
-**Title**:  the same format as a commit subject: `type(scope): subject`.
-
-**Description**:  `.github/PULL_REQUEST_TEMPLATE.md` Complete every section, that the template requires.
-
-| Section | Description |
-| --- | --- |
-| Summary | What the PR does |
-| Related Issues | i.e. `Closes #12` |
-| Changes | A short bulleted list of what changed. Short text blocks are permitted |
-| How to Test | Steps a reviewer can actually follow to verify it works |
-| Evidence | Screenshots or recordings for anything user-facing |
-| Checklist | Tick each item in the checkbox before requesting review |
-
-#### Before you request a review
-
-- Open as a **Draft** while you're still working. Mark it *Ready for review* when it's done.
-- Read your own diff end to end on the *Files changed* tab first.
-- Make sure lint and tests pass. This is especially **non-negotiable** as github actions are disabled for this repo.
-- PR's should only tackle 1 issue at a time. More issues are permitted if the solution is small and related, but the PR should still be titled after the main issue.
-
-#### Asking for a review
-
-| Base branch | Approvals required |
-| --- | --- |
-| `dev` | 1 |
-| `production` | 2 |
-
-- Request reviewers explicitly through the **Reviewers** panel. A message in the appropriate chat can also be utilised, however it is not formal evidence.
-- Authors **never** approve their own pull request.
-- Aim to respond to a review request within 24 hours. Assignees need to communicate if they are unable to review in a timely manner.
-
-#### As a reviewer
-
-Check for the following:
-
-- Does it do what the linked issue asked for?
-- Are the edge cases and error paths handled?
-- Is it readable by someone who wasn't in your head when you wrote it?
-- Are there tests, and do they test behaviour rather than implementation?
-- Any secrets, credentials, or generated files committed by accident?
-- Use **Request changes** for anything blocking and **Comment** for suggestions. **Approve** only when you'd be comfortable owning the code yourself. You are allowed to push fixes to the branch if you want to. However, this is not required.
-
-#### As an author receiving a review
-
-- Reply to every comment. This enforces clear communication
-- Push fixes as new commits.
-- Re-request review once you've addressed the feedback.
-
-### Merging and releases
-
-- Use *Create a merge commit* for every pull request. This keeps each teammate's individual commits in the history.
-- **Never squash-merge `dev` into `production`.**
-- Delete the working branch after merging.
-
-#### Keeping your branch current
-
-Ensure your branch is always up to date via rebasing:
-
-```bash
-git switch feat/12-relay-websocket-handshake
-git fetch origin
-git rebase origin/dev
-git push --force-with-lease
-```
-
-Once review has started, or if someone else has based work on your branch, merge instead:
-
-```bash
-git fetch origin
-git merge origin/dev
-```
-
-#### Releasing
-
-1. Open a pull request from `dev` into `production`, titled `release: v0.2.0`.
-2. Summarise what's shipping in the description.
-3. Get two approvals.
-4. Merge with a merge commit.
-5. Tag the release:
-
-```bash
-git switch production
-git pull origin production
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
-```
-
-We follow [semantic versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
-
-#### Hot-fixing
-
-```bash
-git switch production
-git pull origin production
-git switch -c hotfix/41-relay-crash-on-startup
-```
-
-Open a pull request into `production`, get two approvals, and merge. Then back-merge immediately so the fix isn't lost the next time `dev` is released:
-
-```bash
-git switch dev
-git pull origin dev
-git merge origin/production
-git push origin dev
-```
-
-## Ingestion & Cleaning Contract
-
-`data_cleaning/data.py` is the shared contract for the rest of the pipeline (EDA, all modelling tracks, evaluation). It exposes:
-
-```python
-from data_cleaning.data import getTrainingData, getTestData
-
-train = getTrainingData(regions=["NSW1"], start=datetime(2024, 1, 1), end=datetime(2024, 12, 31))
-test = getTestData(regions=["NSW1"], start=datetime(2024, 1, 1), end=datetime(2024, 12, 31))
-```
-
-Do not read `data_cleaning/data.py` to understand what you're working with — the decisions below are all you need.
-
-### Region
-The NEM covers NSW, QLD, SA, TAS and VIC. This pipeline defaults to **NSW1 only**, but `regions` is a function argument — pass a list of any subset (`NSW1`, `QLD1`, `SA1`, `TAS1`, `VIC1`) to include more.
-
-### Target
-**RRP ($/MWh)** — the Regional Reference Price — is the forecast target. `total_demand` (MW) is also present in AEMO data but is **not** used by this pipeline.
-
-### Frequency
-**5-minute dispatch intervals**, sourced from AEMO's `DISPATCHPRICE` table via [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS) (not the 30-minute `TRADINGPRICE` table).
-
-### Date Range
-Configurable via `start`/`end` function arguments (Python `datetime`). Default bounds: **2024-01-01 00:00:00 to 2024-12-31 23:55:00**.
-
-### Train/Test Split
-Chronological, no shuffling. The **last 20% of the requested date range** is test data; the first 80% is training data. This avoids leaking future information into training, which a random split would do for time series data.
-
-### Shared Data Model (`Data` class)
-
-| Attribute | Type | Meaning |
-|---|---|---|
-| `df` | `pandas.DataFrame` | Cleaned rows for this split (train or test) |
-| `regions` | `list[str]` | NEM region IDs included in this `Data` object |
-| `start` | `datetime` | Start of the requested date range |
-| `end` | `datetime` | End of the requested date range |
-
-`Data.df` columns:
-
-| Column | Type | Meaning |
-|---|---|---|
-| `settlement_date` | `datetime64` | Timestamp of the 5-minute dispatch interval |
-| `region` | `str` | NEM region ID (feature), e.g. `NSW1` |
-| `rrp` | `float64` | Regional Reference Price in $/MWh (**target**) |
-
-
-## Model Fitting
-
-To be able to evaluate models using the universal `evaluate()` function, it must implement the
-abstract `Model` class
-
-## Abstract Model Class
-
-| Abstract Function | Meaning |
-|---|---|
-| `__init__()` | Initialise your model with specific hyperparameters | 
-| `train(training_data: Data) -> None` | Trains your model based on a given training dataset | 
-| `predict(test_data: Data) -> np.ndarray` | Makes predictions based on a given test dataset |
-| `get_model_name() -> str` | Returns the name of your model |
-
-## Evaluation
-
-Using the implemented `Model` class and your test data `Data` class, you can invoke the following
-function to evaluate the model
-
-```python
-evaluate(model: Model, test_data: Data) -> None:
-```
-
-## Pricing Model References
-- [UNSW-CEEM/NEMOSIS git](https://github.com/UNSW-CEEM/NEMOSIS)
-- [Multi-Task Graph Adaptive Learning for Multivariate Electricity Price Short-Term Forecasting in Australia's National Electricity Market paper](https://ieeexplore.ieee.org/document/10486198)
+- [NEMOSIS](https://github.com/UNSW-CEEM/NEMOSIS)
+- [Multi-Task Graph Adaptive Learning for Multivariate Electricity Price Short-Term Forecasting in Australia's National Electricity Market](https://ieeexplore.ieee.org/document/10486198)
