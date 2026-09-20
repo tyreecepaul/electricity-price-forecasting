@@ -57,6 +57,12 @@ def search_hyperparameters(
             y_pred: np.ndarray = model.predict(x_val)
             result: ModelResult = evaluate(model, y_val, y_pred)
 
+            if not result.valid_mask.all():
+                invalid_count = int((~result.valid_mask).sum())
+                raise ValueError(
+                    f"Model produced {invalid_count} non-finite validation results"
+                )
+
             metrics = result.metrics
             n_rows: int = int(result.valid_mask.sum())
             error = ""

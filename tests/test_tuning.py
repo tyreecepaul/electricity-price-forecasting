@@ -105,3 +105,30 @@ def test_search_reports_failed_trials_before_raising():
             experiment,
             verbose=True,
         )
+
+
+def test_search_rejects_partial_non_finite_predictions():
+    experiment = experiment_fixture()
+
+    class PartialModel:
+        model_name = "Partial model"
+
+        def __init__(self, depth):
+            pass
+
+        def train(self, x_train, y_train):
+            pass
+
+        def predict(self, x_validation):
+            return np.array([experiment.validation_df["target"].iloc[0], np.nan])
+
+        def get_model_name(self):
+            return self.model_name
+
+    with pytest.raises(RuntimeError, match="No configuration produced a usable score"):
+        search_hyperparameters(
+            PartialModel,
+            {"depth": [1]},
+            experiment,
+            verbose=False,
+        )
