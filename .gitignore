@@ -16,3 +16,5 @@ __pycache__/
 *.h5
 *.hdf5
 *.nc
+
+pipeline/data_cleaning/nemosis_cache

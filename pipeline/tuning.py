@@ -29,14 +29,16 @@ def search_hyperparameters(
     if metric not in METRIC_NAMES:
         raise ValueError(f"Metric must be one of {METRIC_NAMES}")
 
+    features = experiment.features
+
     fit_df: pd.DataFrame = experiment.fit_df
     validation_df: pd.DataFrame = experiment.validation_df
 
-    x_train: pd.DataFrame = fit_df.drop(["target_rrp"])
-    y_train: pd.Series = fit_df["target_rrp"]
+    x_train: pd.DataFrame = fit_df[features]
+    y_train: pd.Series = fit_df["target"]
 
-    x_val: pd.DataFrame = validation_df.drop(["target_rrp"])
-    y_val: np.ndarray = validation_df["target_rrp"].to_numpy()
+    x_val: pd.DataFrame = validation_df[features]
+    y_val: np.ndarray = validation_df["target"].to_numpy()
 
     candidates: list[dict[str, Any]] = [
         dict(zip(hyperparam_grid, values))
@@ -54,6 +56,8 @@ def search_hyperparameters(
             model.train(x_train, y_train)
             y_pred: np.ndarray = model.predict(x_val)
             result: ModelResult = evaluate(model, y_val, y_pred)
+
+            metrics = result.metrics
             n_rows: int = int(result.valid_mask.sum())
             error = ""
         except Exception as exception:
@@ -64,13 +68,13 @@ def search_hyperparameters(
         records.append({
             "trial": position,
             **config,
-            **result.metrics,
+            **metrics,
             "n_rows": n_rows,
             "error": error
         })
 
         if verbose:
-            outcome: str = error if error else f"{metric}={result.metrics[metric]:.3f}"
+            outcome: str = error if error else f"{metric}={metrics[metric]:.3f}"
             print(f"[{position}/{len(candidates)}] : {outcome}")
 
     trials: pd.DataFrame = pd.DataFrame.from_records(records)

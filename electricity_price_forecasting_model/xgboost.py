@@ -27,18 +27,18 @@ class XGBoostModel(Model):
         reg_alpha: float = 0.1,
         reg_lambda: float = 8.0,
         max_estimators: int = 2000,
-        early_stopping_rounds: int = 100,
+        early_stopping_rounds: int | None = None,
     ):
         self.model = XGBRegressor(
-            max_depth,
-            learning_rate,
-            subsample,
-            colsample_bytree,
-            min_child_weight,
-            reg_alpha,
-            reg_lambda,
-            max_estimators,
-            early_stopping_rounds,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            min_child_weight=min_child_weight,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            n_estimators=max_estimators,
+            early_stopping_rounds=early_stopping_rounds,
             **FIXED_PARAMS,
         )
 
