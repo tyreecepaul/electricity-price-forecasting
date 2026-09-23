@@ -40,13 +40,34 @@ MODEL_REGISTRY = [
     (
         XGBoostModel,
         {
-            "max_depth": [3, 4, 6],
+            "max_depth": [3, 6],
             "learning_rate": [0.03, 0.1],
             "min_child_weight": [4, 8],
+            "max_estimators": [500, 1000],
+            "random_seed": [42],
         },
-    )
+    ),
+    (
+        MLPModel,
+        {
+            "hidden_sizes": [(128, 64, 32)],
+            "learning_rate": [1e-3],
+            "weight_decay": [1e-4],
+            "dropout": [(0.2, 0.15, 0.0)],
+            "batch_size": [256],
+            "max_epochs": [5],
+            "loss": ["huber", "mse", "mae"],
+            "huber_delta": [1.0],
+            "random_seed": [42],
+        },
+    ),
 ]
 ```
+
+This default registry evaluates 16 XGBoost configurations and three variants
+of the original Chapo MLP, one for each training loss. Both wrappers return
+predictions on the configured target scale; the shared pipeline performs final
+price reconstruction and evaluation.
 
 `python main.py` then:
 
@@ -56,6 +77,20 @@ MODEL_REGISTRY = [
 4. retrains the selected configuration on all pre-test training data;
 5. reconstructs target-scale predictions into RRP forecasts; and
 6. evaluates the forecasts once on the held-out test period.
+
+Run every registered model with:
+
+```bash
+python main.py
+```
+
+Or select one or more models from the command line:
+
+```bash
+python main.py --models mlp
+python main.py --models xgboost
+python main.py --models mlp xgboost
+```
 
 ### Target Types
 

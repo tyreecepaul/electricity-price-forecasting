@@ -35,6 +35,31 @@ def test_importing_main_does_not_start_an_experiment(monkeypatch):
     load_main_module()
 
 
+def test_cli_selects_requested_models_in_registry_order():
+    module = load_main_module()
+
+    selected = module.select_model_registry(["mlp"])
+
+    assert [factory.model_name for factory, _ in selected] == ["MLP"]
+
+
+def test_cli_defaults_to_all_registered_models():
+    module = load_main_module()
+
+    args = module.parse_args([])
+
+    assert args.models is None
+    assert module.select_model_registry(args.models) == module.MODEL_REGISTRY
+
+
+def test_cli_parses_multiple_models():
+    module = load_main_module()
+
+    args = module.parse_args(["--models", "mlp", "xgboost"])
+
+    assert args.models == ["mlp", "xgboost"]
+
+
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):
     module = load_main_module()
 
@@ -106,6 +131,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
     monkeypatch.setattr(module, "reconstruct_price_forecast", fake_reconstruct)
     monkeypatch.setattr(module, "evaluate", fake_evaluate)
+    monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
 
     module.main()
 

@@ -1,11 +1,13 @@
+import argparse
 from electricity_price_forecasting_model.xgboost import XGBoostModel
-from pipeline.evaluation import ModelResult, evaluate
+from electricity_price_forecasting_model.mlp import MLPModel
+from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
     ExperimentConfig,
     prepare_experiment,
     print_experiment_summary,
     ExperimentData,
-    reconstruct_price_forecast
+    reconstruct_price_forecast,
 )
 from pipeline.tuning import search_hyperparameters, SearchResult
 from pipeline.model import Model
@@ -23,18 +25,75 @@ EXPERIMENT: ExperimentConfig = ExperimentConfig(
     validation_fraction=0.20
 )
 
-MODEL_REGISTRY: list[tuple[Model, dict[str, Sequence]]] = [
+MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         XGBoostModel,
         {
-            "max_depth": [3,4,6],
-            "learning_rate": [0.03, 0.1], 
-            "min_child_weight": [4,8]
+            "max_depth": [3, 6],
+            "learning_rate": [0.03, 0.1],
+            "min_child_weight": [4, 8],
+            "max_estimators": [500, 1000],
+            "random_seed": [42],
         }
-    )
+    ),
+    (
+        MLPModel,
+        {
+            "hidden_sizes": [(128, 64, 32)],
+            "dropout": [(0.2, 0.15, 0.0)],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [256],
+            "max_epochs": [30],
+            "patience": [3],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+            "random_seed": [42],
+        }
+    ),
 ]
 
-def main() -> None:
+
+def model_cli_name(model_factory: type[Model]) -> str:
+    """Return the stable command-line name for a registered model."""
+    return model_factory.model_name.lower().replace(" ", "-")
+
+
+def select_model_registry(
+    selected_models: Sequence[str] | None,
+) -> list[tuple[type[Model], dict[str, Sequence]]]:
+    """Select registry entries while preserving their configured order."""
+    if selected_models is None:
+        return MODEL_REGISTRY
+
+    requested = set(selected_models)
+    available = {model_cli_name(factory) for factory, _ in MODEL_REGISTRY}
+    unknown = requested.difference(available)
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"Unknown models: {names}")
+    return [
+        entry
+        for entry in MODEL_REGISTRY
+        if model_cli_name(entry[0]) in requested
+    ]
+
+
+def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Tune and evaluate electricity-price forecasting models."
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=sorted(model_cli_name(factory) for factory, _ in MODEL_REGISTRY),
+        help="Models to run. Omit this option to run every registered model.",
+    )
+    return parser.parse_args(arguments)
+
+
+def main(selected_models: Sequence[str] | None = None) -> None:
     # Prepare experiment
     experiment: ExperimentData = prepare_experiment(EXPERIMENT)
     print_experiment_summary(experiment)
@@ -50,7 +109,7 @@ def main() -> None:
     # Fit each model and find optimal hyperparameters
     results: list[ModelResult] = []
 
-    for model_factory, hyperparam_grid in MODEL_REGISTRY:
+    for model_factory, hyperparam_grid in select_model_registry(selected_models):
         print(f"=== {model_factory.model_name} ===")
 
         search_result: SearchResult = search_hyperparameters(
@@ -73,7 +132,8 @@ def main() -> None:
 
         results.append(result)
 
-    print(results)
+    print_evaluation_summary(results, prepared)
 
 if __name__ == "__main__":
-    main()
+    cli_args = parse_args()
+    main(cli_args.models)
