@@ -82,14 +82,6 @@ MODEL_REGISTRY = [
 ]
 ```
 
-The neural wrappers port the original Chapo MLP and GRU architectures. The
-registered GRU is a faster 16-unit variant with a 12-step (one-hour) context;
-constructor defaults retain the original 32-unit, 36-step configuration. The
-GRU uses trailing training rows as context for the first validation or test
-sequence, so every prediction remains chronologically aligned. All wrappers
-return predictions on the configured target scale; the shared pipeline performs
-final price reconstruction and evaluation.
-
 Sequence construction is shared in `pipeline/sequences.py`. Its lazy training
 and context datasets can be reused by GRU, LSTM, TCN, and Transformer wrappers
 without materialising every overlapping window. The array-based
