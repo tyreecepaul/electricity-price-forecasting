@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import numpy as np
 from torch import nn
@@ -12,13 +11,18 @@ from torch import nn
 
 @dataclass(frozen=True)
 class TrainingResult:
-    """Outcome of an epoch-based training run."""
+    """Training history and the settings needed to refit the selected model.
+
+    Epoch numbers are one-based. ``best_epoch`` can precede ``stopped_epoch``:
+    patience allows further training before the best weights are restored.
+    """
 
     best_epoch: int
     stopped_epoch: int
     best_validation_score: float | None
     training_loss_history: list[float]
     validation_score_history: list[float]
+    refit_config: dict[str, object] = field(default_factory=dict)
 
 
 class TorchEarlyStoppingTrainer:
@@ -73,6 +77,8 @@ class TorchEarlyStoppingTrainer:
             training_history.append(training_loss)
 
             if validation_score is None:
+                # Final refits use the epoch budget chosen during model selection.
+                # They must not use test outcomes to decide when to stop.
                 best_epoch = epoch
                 continue
 
@@ -86,7 +92,12 @@ class TorchEarlyStoppingTrainer:
             if score < best_validation_score - self.min_delta:
                 best_validation_score = score
                 best_epoch = epoch
-                best_state = deepcopy(network.state_dict())
+                # Clone the checkpoint so later updates cannot change it. Keeping
+                # it on CPU avoids reserving a second model's worth of GPU memory.
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in network.state_dict().items()
+                }
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -105,4 +116,5 @@ class TorchEarlyStoppingTrainer:
             ),
             training_loss_history=training_history,
             validation_score_history=validation_history,
+            refit_config={"max_epochs": best_epoch},
         )

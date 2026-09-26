@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, Sequence
+from typing import Literal
 
 import pandas as pd
 
@@ -36,6 +37,11 @@ class PreparedModelData:
 
     features:
         Exact feature names used in X_train/X_test.
+
+    train_timeline, test_timeline:
+        Complete feature timelines, including observations with unavailable
+        targets. Sequence models use these frames as history and apply label
+        masks; train_df/test_df remain the eligible supervised/scoring rows.
     """
 
     X_train: pd.DataFrame
@@ -48,6 +54,8 @@ class PreparedModelData:
     region: str
     horizon: int
     target_type: str
+    train_timeline: pd.DataFrame | None = None
+    test_timeline: pd.DataFrame | None = None
 
 
 def extract_actuals_and_p5min(
@@ -146,9 +154,7 @@ def prepare_model_data(
         raise ValueError("horizon must be a positive number of minutes")
 
     if target not in {"change", "price", "aemo_error"}:
-        raise ValueError(
-            "target must be one of 'change', 'price', or 'aemo_error'"
-        )
+        raise ValueError("target must be one of 'change', 'price', or 'aemo_error'")
 
     if config is None:
         config = FeatureConfig(
@@ -222,8 +228,7 @@ def prepare_model_data(
             column
             for column in selected_features
             if (
-                column in test_features.columns
-                and train_features[column].notna().any()
+                column in test_features.columns and train_features[column].notna().any()
             )
         ]
     elif isinstance(features, Sequence) and not isinstance(features, str):
@@ -283,18 +288,10 @@ def prepare_model_data(
             )
         required_rows.append(aemo_forecast_column)
 
-    train_df = (
-        train_features.dropna(subset=required_rows)
-        .sort_values("settlement_date")
-        .reset_index(drop=True)
-        .copy()
-    )
-    test_df = (
-        test_features.dropna(subset=required_rows)
-        .sort_values("settlement_date")
-        .reset_index(drop=True)
-        .copy()
-    )
+    # Keep unlabeled observations for sequence context, including the final
+    # horizon of training. Eligibility is separate from the feature timeline.
+    train_df = train_features.copy()
+    test_df = test_features.copy()
 
     if train_df.empty:
         raise ValueError("No training rows remain after target filtering")
@@ -305,15 +302,19 @@ def prepare_model_data(
         train_df["target"] = train_df["target_rrp"] - train_df["rrp"]
         test_df["target"] = test_df["target_rrp"] - test_df["rrp"]
     elif target == "aemo_error":
-        train_df["target"] = (
-            train_df["target_rrp"] - train_df[aemo_forecast_column]
-        )
-        test_df["target"] = (
-            test_df["target_rrp"] - test_df[aemo_forecast_column]
-        )
+        train_df["target"] = train_df["target_rrp"] - train_df[aemo_forecast_column]
+        test_df["target"] = test_df["target_rrp"] - test_df[aemo_forecast_column]
     else:
         train_df["target"] = train_df["target_rrp"]
         test_df["target"] = test_df["target_rrp"]
+
+    train_df.loc[train_df[required_rows].isna().any(axis=1), "target"] = float("nan")
+    test_df.loc[test_df[required_rows].isna().any(axis=1), "target"] = float("nan")
+    train_timeline, test_timeline = train_df.copy(), test_df.copy()
+    train_df = train_df.dropna(subset=["target"]).reset_index(drop=True)
+    test_df = test_df.dropna(subset=["target"]).reset_index(drop=True)
+    if train_df.empty or test_df.empty:
+        raise ValueError("No rows remain after target filtering")
 
     X_train = train_df[selected_features].copy()
     X_test = test_df[selected_features].copy()
@@ -334,4 +335,6 @@ def prepare_model_data(
         region=region,
         horizon=horizon,
         target_type=target,
+        train_timeline=train_timeline,
+        test_timeline=test_timeline,
     )

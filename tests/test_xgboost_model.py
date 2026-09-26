@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from electricity_price_forecasting_model.xgboost import XGBoostModel
+from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 
 
 def test_xgboost_receives_named_hyperparameters():

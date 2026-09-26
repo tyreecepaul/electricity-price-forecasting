@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
+from pipeline.contracts import forecast_vector
 from pipeline.model import Model
 from pipeline.preprocessing import PreparedModelData
 
@@ -46,8 +48,8 @@ def _score(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
     errors: np.ndarray = actual - predicted
     return {
         "mae": float(np.mean(np.abs(errors))),
-        "rmse": float(np.sqrt(np.mean(errors ** 2))),
-        "sse": float(np.sum(errors ** 2)),
+        "rmse": float(np.sqrt(np.mean(errors**2))),
+        "sse": float(np.sum(errors**2)),
         "median_ae": float(np.median(np.abs(errors))),
     }
 
@@ -59,15 +61,12 @@ def evaluate(
     *,
     mask: np.ndarray | None = None,
 ) -> ModelResult:
-    if predicted.size != actual.size:
-        raise ValueError(
-            f"{model.get_model_name()} returned {predicted.size} predictions"
-            f" for {actual.size} test rows"
-        )
+    actual = forecast_vector(actual, len(actual), name="actual")
+    predicted = forecast_vector(predicted, len(actual))
 
     valid_mask: np.ndarray = np.isfinite(actual) & np.isfinite(predicted)
     if mask is not None:
-        valid_mask &= np.asarray(mask, dtype=bool)
+        valid_mask &= forecast_vector(mask, len(actual), name="mask").astype(bool)
 
     return ModelResult(
         model_name=model.get_model_name(),
