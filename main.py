@@ -7,7 +7,6 @@ import numpy as np
 
 from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
-from electricity_price_forecasting_model.final_model.transformer import TransformerModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
@@ -77,26 +76,6 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     ),
 ]
 
-# Explicit opt-in while the new architecture is being benchmarked.
-OPTIONAL_MODELS = [
-    (
-        TransformerModel,
-        {
-            "sequence_length": [36],
-            "d_model": [32],
-            "nhead": [4],
-            "num_layers": [2],
-            "dim_feedforward": [64],
-            "dropout": [0.1],
-            "batch_size": [128],
-            "prediction_batch_size": [256],
-            "max_epochs": [20],
-            "patience": [3],
-        },
-    ),
-]
-
-
 def model_cli_name(model_factory: type[Model]) -> str:
     """Return the stable command-line name for a registered model."""
     return model_factory.model_name.lower().replace(" ", "-")
@@ -110,16 +89,14 @@ def select_model_registry(
         return MODEL_REGISTRY
 
     requested = set(selected_models)
-    available = {
-        model_cli_name(factory) for factory, _ in MODEL_REGISTRY + OPTIONAL_MODELS
-    }
+    available = {model_cli_name(factory) for factory, _ in MODEL_REGISTRY}
     unknown = requested.difference(available)
     if unknown:
         names = ", ".join(sorted(unknown))
         raise ValueError(f"Unknown models: {names}")
     return [
         entry
-        for entry in MODEL_REGISTRY + OPTIONAL_MODELS
+        for entry in MODEL_REGISTRY
         if model_cli_name(entry[0]) in requested
     ]
 
@@ -131,10 +108,8 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=sorted(
-            model_cli_name(factory) for factory, _ in MODEL_REGISTRY + OPTIONAL_MODELS
-        ),
-        help="Models to run. Defaults to XGBoost, MLP and GRU; Transformer is opt-in.",
+        choices=sorted(model_cli_name(factory) for factory, _ in MODEL_REGISTRY),
+        help="Models to run. Defaults to all registered models.",
     )
     parser.add_argument("--folds", type=int, default=EXPERIMENT.walk_forward_folds)
     parser.add_argument(

@@ -91,9 +91,8 @@ sequence batch is useful for analysis or another deep-learning framework.
 The common neural lifecycle lives in `pipeline/neural.py`: fitted imputation
 and scaling, target transforms, deterministic seeding, batched training and
 inference, checkpoint selection, optional gradient clipping, StepLR scheduling,
-and CUDA mixed precision. MLP, GRU, and the opt-in Transformer use it. The
-Transformer uses a feature projection, sinusoidal positions, an encoder, and a
-scalar forecast head; it is an initial architecture, not a tuned benchmark.
+and CUDA mixed precision. MLP and GRU use it, and future sequence architectures
+such as Transformers can reuse the same lifecycle.
 
 ### Temporal data and model extensions
 
@@ -137,10 +136,10 @@ as known-future inputs.
 ### Reproducible model comparisons
 
 ```bash
-python main.py --models gru transformer --folds 3 --metric rmse --seed 42
+python main.py --models gru --folds 3 --metric rmse --seed 42
 ```
 
-The Transformer is opt-in; omitting `--models` keeps the XGBoost/MLP/GRU defaults.
+Omitting `--models` runs all models in `MODEL_REGISTRY`.
 `--folds 1` uses the usual holdout; larger counts use expanding training windows
 and disjoint validation blocks, each of size approximately
 `validation_fraction * training_rows`. Leave enough initial training data for
