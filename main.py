@@ -1,6 +1,7 @@
 import argparse
 from electricity_price_forecasting_model.xgboost import XGBoostModel
 from electricity_price_forecasting_model.mlp import MLPModel
+from electricity_price_forecasting_model.layers.transformer_layers import NEMfoqrmer
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
     ExperimentConfig,

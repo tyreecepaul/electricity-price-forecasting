@@ -294,7 +294,7 @@ class MLPModel(Model):
                 validation_inputs,
                 validation_actual,
             )
-
+        
         trainer = TorchEarlyStoppingTrainer(
             max_epochs=self.max_epochs,
             patience=self.patience,
