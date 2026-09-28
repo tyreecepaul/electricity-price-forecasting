@@ -1,41 +1,52 @@
 import argparse
+<<<<<<< HEAD
 from electricity_price_forecasting_model.xgboost import XGBoostModel
 from electricity_price_forecasting_model.mlp import MLPModel
 from electricity_price_forecasting_model.layers.transformer_layers import NEMfoqrmer
+=======
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+
+from electricity_price_forecasting_model.final_model.gru import GRUModel
+from electricity_price_forecasting_model.final_model.mlp import MLPModel
+from electricity_price_forecasting_model.final_model.transformer import TransformerModel
+from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
+from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
+>>>>>>> 0f683e7493657d8b8065fdd2598f44abba0dfeac
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
     ExperimentConfig,
+    ExperimentData,
     prepare_experiment,
     print_experiment_summary,
-    ExperimentData,
     reconstruct_price_forecast,
 )
-from pipeline.tuning import search_hyperparameters, SearchResult
 from pipeline.model import Model
-
-from typing import Sequence
-
-import pandas as pd
-import numpy as np
+from pipeline.model_data import final_training_data, predict_test
+from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
     region="NSW1",
-    horizon_minutes=30,
+    horizon_minutes=5,
     target_type="change",
     model_features="all",
-    validation_fraction=0.20
+    validation_fraction=0.20,
 )
 
+# Each entry pairs a model constructor with candidate hyperparameter values.
+# Search evaluates their Cartesian product; one-element lists fix a setting.
 MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         XGBoostModel,
         {
-            "max_depth": [3, 6],
-            "learning_rate": [0.03, 0.1],
-            "min_child_weight": [4, 8],
-            "max_estimators": [500, 1000],
-            "random_seed": [42],
-        }
+            "max_depth": [6],
+            "learning_rate": [0.1],
+            "min_child_weight": [4],
+            "max_estimators": [1000],
+        },
     ),
     (
         MLPModel,
@@ -50,8 +61,44 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "min_delta": [0.001],
             "loss": ["huber"],
             "huber_delta": [1.0],
-            "random_seed": [42],
-        }
+        },
+    ),
+    (
+        GRUModel,
+        {
+            "sequence_length": [12],
+            "hidden_size": [16],
+            "num_layers": [1],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [512],
+            "prediction_batch_size": [2048],
+            "max_epochs": [10],
+            "patience": [2],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+        },
+    ),
+]
+
+# Explicit opt-in while the new architecture is being benchmarked.
+OPTIONAL_MODELS = [
+    (
+        TransformerModel,
+        {
+            "sequence_length": [36],
+            "d_model": [32],
+            "nhead": [4],
+            "num_layers": [2],
+            "dim_feedforward": [64],
+            "dropout": [0.1],
+            "batch_size": [128],
+            "prediction_batch_size": [256],
+            "max_epochs": [20],
+            "patience": [3],
+        },
     ),
 ]
 
@@ -69,14 +116,16 @@ def select_model_registry(
         return MODEL_REGISTRY
 
     requested = set(selected_models)
-    available = {model_cli_name(factory) for factory, _ in MODEL_REGISTRY}
+    available = {
+        model_cli_name(factory) for factory, _ in MODEL_REGISTRY + OPTIONAL_MODELS
+    }
     unknown = requested.difference(available)
     if unknown:
         names = ", ".join(sorted(unknown))
         raise ValueError(f"Unknown models: {names}")
     return [
         entry
-        for entry in MODEL_REGISTRY
+        for entry in MODEL_REGISTRY + OPTIONAL_MODELS
         if model_cli_name(entry[0]) in requested
     ]
 
@@ -88,22 +137,64 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=sorted(model_cli_name(factory) for factory, _ in MODEL_REGISTRY),
-        help="Models to run. Omit this option to run every registered model.",
+        choices=sorted(
+            model_cli_name(factory) for factory, _ in MODEL_REGISTRY + OPTIONAL_MODELS
+        ),
+        help="Models to run. Defaults to XGBoost, MLP and GRU; Transformer is opt-in.",
+    )
+    parser.add_argument("--folds", type=int, default=EXPERIMENT.walk_forward_folds)
+    parser.add_argument(
+        "--metric",
+        choices=["mae", "rmse", "sse", "median_ae"],
+        default=EXPERIMENT.selection_metric,
+    )
+    parser.add_argument("--seed", type=int, default=EXPERIMENT.random_seed)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "reports" / "runs",
+    )
+    parser.add_argument("--no-save", action="store_true")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Rebuild prepared data from ingestion/cache",
     )
     return parser.parse_args(arguments)
 
 
-def main(selected_models: Sequence[str] | None = None) -> None:
-    # Prepare experiment
-    experiment: ExperimentData = prepare_experiment(EXPERIMENT)
+def main(
+    selected_models: Sequence[str] | None = None,
+    *,
+    config=None,
+    output_directory=None,
+    save_results=True,
+    force_refresh=False,
+) -> None:
+    """Prepare shared data, select/refit each model, then score the held-out test.
+
+    Temporal representation choices live in model_data; model-specific network
+    and fitting details stay behind the common model interface.
+    """
+    config = config or EXPERIMENT
+    experiment: ExperimentData = (
+        prepare_experiment(config, force_refresh=True)
+        if force_refresh
+        else prepare_experiment(config)
+    )
     print_experiment_summary(experiment)
 
     prepared = experiment.prepared
-
-    x_train: pd.DataFrame = prepared.X_train
-    y_train: pd.Series = prepared.y_train
-    x_test: pd.DataFrame = prepared.X_test
+    run_directory = (
+        create_run_directory(
+            config,
+            Path(output_directory)
+            if output_directory is not None
+            else Path(__file__).resolve().parent / "reports" / "runs",
+        )
+        if save_results
+        else None
+    )
 
     y_test_price: np.ndarray = experiment.test_df["target_rrp"].to_numpy()
 
@@ -114,27 +205,52 @@ def main(selected_models: Sequence[str] | None = None) -> None:
         print(f"=== {model_factory.model_name} ===")
 
         search_result: SearchResult = search_hyperparameters(
-            model_factory,
-            hyperparam_grid,
-            experiment
+            model_factory, hyperparam_grid, experiment
         )
 
+        # Start a fresh fit on all pre-test data, using the selected epoch budget.
+        # Reusing the search model would leave out its validation-period training data.
         model: Model = model_factory(**search_result.best_config)
+        x_train, y_train = final_training_data(model, prepared)
         model.train(x_train, y_train)
 
-        y_pred: np.ndarray = model.predict(x_test)
+        y_pred: np.ndarray = predict_test(model, prepared)
+        # Model outputs may be price changes or AEMO residuals. Convert them to
+        # actual RRP units before comparing with prices and common baselines.
         predicted_price: np.ndarray = reconstruct_price_forecast(
-            experiment.test_df,
-            y_pred,
-            experiment.config
+            experiment.test_df, y_pred, experiment.config
         )
 
         result = evaluate(model, y_test_price, predicted_price)
 
         results.append(result)
+        if run_directory is not None:
+            save_model_run(
+                run_directory,
+                model,
+                search_result,
+                experiment.test_df,
+                predicted_price,
+                result,
+            )
 
     print_evaluation_summary(results, prepared)
+    if run_directory is not None:
+        save_run_summary(run_directory, results)
+        print(f"Run artifacts saved to {run_directory}")
+
 
 if __name__ == "__main__":
     cli_args = parse_args()
-    main(cli_args.models)
+    main(
+        cli_args.models,
+        config=replace(
+            EXPERIMENT,
+            walk_forward_folds=cli_args.folds,
+            selection_metric=cli_args.metric,
+            random_seed=cli_args.seed,
+        ),
+        output_directory=cli_args.output_dir,
+        save_results=not cli_args.no_save,
+        force_refresh=cli_args.refresh,
+    )

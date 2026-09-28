@@ -9,11 +9,12 @@ import pandas as pd
 if TYPE_CHECKING:
     from pipeline.training import TrainingResult
 
+
 class Model(ABC):
+    model_name: str
+    requires_sequence: bool = False
 
-    model_name: str 
-
-    @abstractmethod 
+    @abstractmethod
     def __init__(self, **model_params) -> None:
         pass
 
