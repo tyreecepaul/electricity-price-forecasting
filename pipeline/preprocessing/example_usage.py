@@ -7,7 +7,6 @@ from pipeline.preprocessing import (
     suggested_scaling_groups,
 )
 
-
 # ============================================================
 # 1. CLASSICAL / TREE MODEL
 # ============================================================
@@ -79,17 +78,18 @@ X_test_scaled = scaler.transform(data.X_test)
 # The returned full frames contain the same selected features plus a standard
 # ``target`` column, so sequence models do not need another preprocessing path.
 train_sequences = make_sequences(
-    data.train_df,
+    data.train_timeline,
     feature_columns=data.features,
     target_columns=["target"],
     sequence_length=288,
 )
 
 test_sequences = make_sequences(
-    data.test_df,
+    data.test_timeline,
     feature_columns=data.features,
     target_columns=["target"],
     sequence_length=288,
+    history=data.train_timeline,
 )
 
 print("Sequence train X:", train_sequences.X.shape)

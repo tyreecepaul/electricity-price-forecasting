@@ -11,6 +11,8 @@ __pycache__/
 pytest-cache-files-*/
 
 *.joblib
+reports/runs/
+tmp/pipeline-tests-*/
 
 .vscode/
 *.parquet

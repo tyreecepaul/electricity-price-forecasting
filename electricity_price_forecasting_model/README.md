@@ -4,6 +4,7 @@
 .
 ├── layers # all layers including modules and models to be used in final model
 ├── final_model # final model class composed of layers and modules
+├── baseline_models # non-deep learning models for baseline comparison
 ├── experiment_config # main training executable to run final model with any feature engineering scripts
 ├── README.md 
 ```

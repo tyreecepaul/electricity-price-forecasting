@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = PROJECT_ROOT / "main.py"
 
@@ -21,7 +20,7 @@ def load_main_module():
 
 
 def test_importing_main_does_not_start_an_experiment(monkeypatch):
-    import pipeline.experiment_pipeline as experiment_pipeline
+    from pipeline import experiment_pipeline
 
     def unexpected_run(*args, **kwargs):
         raise AssertionError("importing main.py started the experiment")
@@ -43,6 +42,14 @@ def test_cli_selects_requested_models_in_registry_order():
     assert [factory.model_name for factory, _ in selected] == ["MLP"]
 
 
+def test_cli_selects_gru():
+    module = load_main_module()
+
+    selected = module.select_model_registry(["gru"])
+
+    assert [factory.model_name for factory, _ in selected] == ["GRU"]
+
+
 def test_cli_defaults_to_all_registered_models():
     module = load_main_module()
 
@@ -55,9 +62,9 @@ def test_cli_defaults_to_all_registered_models():
 def test_cli_parses_multiple_models():
     module = load_main_module()
 
-    args = module.parse_args(["--models", "mlp", "xgboost"])
+    args = module.parse_args(["--models", "mlp", "gru", "xgboost"])
 
-    assert args.models == ["mlp", "xgboost"]
+    assert args.models == ["mlp", "gru", "xgboost"]
 
 
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):
@@ -133,7 +140,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     monkeypatch.setattr(module, "evaluate", fake_evaluate)
     monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
 
-    module.main()
+    module.main(save_results=False)
 
     pd.testing.assert_frame_equal(trained["x"], train_x)
     pd.testing.assert_series_equal(trained["y"], train_y)

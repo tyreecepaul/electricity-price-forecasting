@@ -11,9 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal
 
 import joblib
 import numpy as np
@@ -24,17 +25,39 @@ from sklearn.metrics import (
     median_absolute_error,
 )
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pipeline.contracts import forecast_vector
 from pipeline.preprocessing import PreparedModelData, prepare_model_data
-
+from pipeline.preprocessing.config import FeatureConfig
 
 TargetType = Literal["change", "price", "aemo_error"]
 FeatureSelection = Literal["all"] | Sequence[str]
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
+
+
+def source_fingerprint() -> str:
+    """Fingerprint preparation code and local raw-cache file identities.
+
+    Raw files use path, size and nanosecond mtime (not a full content hash).
+    Upstream revisions not downloaded locally still require force_refresh.
+    """
+    digest = hashlib.sha256()
+    for source in sorted((PROJECT_ROOT / "pipeline" / "preprocessing").glob("*.py")):
+        digest.update(source.name.encode())
+        digest.update(source.read_bytes())
+    ingestion = PROJECT_ROOT / "pipeline" / "data_cleaning" / "data.py"
+    digest.update(ingestion.read_bytes())
+    for name in ("nemosis_cache", "nemseer_cache"):
+        for path in sorted((ingestion.parent / name).rglob("*")):
+            if path.is_file():
+                stat = path.stat()
+                digest.update(
+                    f"{path.relative_to(PROJECT_ROOT)}:{stat.st_size}:{stat.st_mtime_ns}".encode()
+                )
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -47,16 +70,25 @@ class ExperimentConfig:
     model_features: FeatureSelection = "all"
     validation_fraction: float = 0.15
     cache_directory: Path = PROJECT_ROOT / "model_cache"
+    feature_config: FeatureConfig = field(default_factory=FeatureConfig)
+    walk_forward_folds: int = 1
+    selection_metric: str = "mae"
+    random_seed: int = 42
 
     def __post_init__(self) -> None:
         if self.horizon_minutes <= 0:
             raise ValueError("horizon_minutes must be positive")
         if self.target_type not in {"change", "price", "aemo_error"}:
-            raise ValueError(
-                "target_type must be 'change', 'price', or 'aemo_error'"
-            )
+            raise ValueError("target_type must be 'change', 'price', or 'aemo_error'")
         if not 0 < self.validation_fraction < 1:
             raise ValueError("validation_fraction must be between 0 and 1")
+        if (
+            self.walk_forward_folds < 1
+            or int(self.walk_forward_folds) != self.walk_forward_folds
+        ):
+            raise ValueError("walk_forward_folds must be a positive integer")
+        if self.selection_metric not in {"mae", "rmse", "sse", "median_ae"}:
+            raise ValueError("Unsupported selection_metric")
 
     @property
     def aemo_forecast_column(self) -> str:
@@ -98,6 +130,8 @@ class ExperimentConfig:
             "horizon_minutes": self.horizon_minutes,
             "target_type": self.target_type,
             "model_features": features,
+            "feature_config": asdict(self.feature_config),
+            "source_fingerprint": source_fingerprint(),
         }
 
 
@@ -149,6 +183,7 @@ def load_prepared_data(
         horizon=config.horizon_minutes,
         features=config.model_features,
         target=config.target_type,
+        config=config.feature_config,
     )
     payload = {
         "metadata": config.cache_metadata(),
@@ -174,9 +209,7 @@ def chronological_validation_split(
     fit_df = train_df[
         (train_df["settlement_date"] + target_delta) < validation_start
     ].copy()
-    validation_df = train_df[
-        train_df["settlement_date"] >= validation_start
-    ].copy()
+    validation_df = train_df[train_df["settlement_date"] >= validation_start].copy()
 
     if fit_df.empty or validation_df.empty:
         raise RuntimeError("Chronological validation split produced an empty subset")
@@ -199,8 +232,39 @@ def prepare_experiment(
         prepared=prepared,
         fit_df=fit_df,
         validation_df=validation_df,
-        test_df=prepared.test_df
+        test_df=prepared.test_df,
     )
+
+
+def walk_forward_splits(experiment: ExperimentData):
+    """Return expanding fit periods with disjoint validation blocks and label embargoes.
+
+    Blocks are sized by eligible row count, not calendar duration. Later folds
+    may train on earlier validation periods, as in periodic real-world retraining;
+    the held-out test period is never included in these folds.
+    """
+    count = int(experiment.config.walk_forward_folds)
+    if count == 1:
+        return [(experiment.fit_df, experiment.validation_df)]
+    frame = experiment.prepared.train_df
+    width = len(frame) - int(len(frame) * (1 - experiment.config.validation_fraction))
+    initial = len(frame) - count * width
+    if initial <= 0:
+        raise ValueError("Too many walk-forward folds for validation_fraction")
+    folds = []
+    for position in range(count):
+        start = initial + position * width
+        validation = frame.iloc[start : start + width].copy()
+        cutoff = validation["settlement_date"].min()
+        fit = frame.loc[
+            frame["settlement_date"]
+            + pd.Timedelta(minutes=experiment.config.horizon_minutes)
+            < cutoff
+        ].copy()
+        if fit.empty:
+            raise ValueError("Walk-forward fold has no eligible training rows")
+        folds.append((fit, validation))
+    return folds
 
 
 def complete_case_rows(
@@ -217,7 +281,7 @@ def reconstruct_price_forecast(
     config: ExperimentConfig,
 ) -> np.ndarray:
     """Convert target-scale model output into an RRP forecast."""
-    predicted_target = np.asarray(predicted_target)
+    predicted_target = forecast_vector(predicted_target, len(frame))
     if config.target_type == "price":
         return predicted_target
     if config.target_type == "change":
@@ -281,10 +345,7 @@ def print_improvement(
     if baseline_mae == 0:
         return
     improvement = (baseline_mae - model_mae) / baseline_mae * 100.0
-    print(
-        f"{model_name} MAE improvement over {baseline_name}: "
-        f"{improvement:.2f}%"
-    )
+    print(f"{model_name} MAE improvement over {baseline_name}: {improvement:.2f}%")
 
 
 def print_experiment_summary(experiment: ExperimentData) -> None:
@@ -437,7 +498,9 @@ def print_price_regime_results(
         print("Observations:", len(subset))
         model_mae = mean_absolute_error(subset["actual"], subset["predicted"])
         print(f"{model_name:<12} ${model_mae:.2f}")
-        print(f"{'Persistence':<12} ${mean_absolute_error(subset['actual'], subset['baseline']):.2f}")
+        print(
+            f"{'Persistence':<12} ${mean_absolute_error(subset['actual'], subset['baseline']):.2f}"
+        )
         aemo_subset = subset.dropna(subset=["aemo_p5min"])
         if not aemo_subset.empty:
             aemo_mae = mean_absolute_error(
@@ -462,8 +525,4 @@ def print_target_diagnostics(
             config.predicted_target_column: predicted_target,
         }
     )
-    print(
-        diagnostics.describe(
-            percentiles=[0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
-        )
-    )
+    print(diagnostics.describe(percentiles=[0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]))

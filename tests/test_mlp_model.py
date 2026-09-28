@@ -8,7 +8,7 @@ import pytest
 pytest.importorskip("torch")
 from torch import nn  # noqa: E402
 
-from electricity_price_forecasting_model.mlp import (  # noqa: E402
+from electricity_price_forecasting_model.final_model.mlp import (  # noqa: E402
     FeedForwardNetwork,
     MLPModel,
 )
@@ -71,7 +71,7 @@ def test_feed_forward_network_uses_requested_hidden_sizes():
     ]
 
 
-def test_default_network_matches_chapo_architecture():
+def test_default_network_matches_architecture():
     model = MLPModel(device="cpu")
     network = FeedForwardNetwork(10, model.hidden_sizes, model.dropout)
 

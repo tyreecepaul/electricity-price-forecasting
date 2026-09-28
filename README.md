@@ -61,13 +61,106 @@ MODEL_REGISTRY = [
             "random_seed": [42],
         },
     ),
+    (
+        GRUModel,
+        {
+            "sequence_length": [12],
+            "hidden_size": [16],
+            "num_layers": [1],
+            "dropout": [0.0],
+            "learning_rate": [1e-3],
+            "weight_decay": [1e-4],
+            "batch_size": [512],
+            "prediction_batch_size": [2048],
+            "max_epochs": [10],
+            "patience": [2],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+            "random_seed": [42],
+        },
+    ),
 ]
 ```
 
-This default registry evaluates 16 XGBoost configurations and three variants
-of the original Chapo MLP, one for each training loss. Both wrappers return
-predictions on the configured target scale; the shared pipeline performs final
-price reconstruction and evaluation.
+Sequence construction is shared in `pipeline/sequences.py`. Its lazy training
+and context datasets can be reused by GRU, LSTM, TCN, and Transformer wrappers
+without materialising every overlapping window. The array-based
+`make_sequences` preprocessing helper also accepts `history=` when an eager
+sequence batch is useful for analysis or another deep-learning framework.
+
+The common neural lifecycle lives in `pipeline/neural.py`: fitted imputation
+and scaling, target transforms, deterministic seeding, batched training and
+inference, checkpoint selection, optional gradient clipping, StepLR scheduling,
+and CUDA mixed precision. MLP, GRU, and the opt-in Transformer use it. The
+Transformer uses a feature projection, sinusoidal positions, an encoder, and a
+scalar forecast head; it is an initial architecture, not a tuned benchmark.
+
+### Temporal data and model extensions
+
+`PreparedModelData.train_timeline` and `test_timeline` retain all observed
+feature rows, including rows without targets. The existing `train_df` and
+`test_df` contain eligible supervised/scoring rows. During validation, the
+forecast-horizon embargo masks training labels but retains preceding features
+as sequence context. Neural preprocessing statistics are fitted on eligible
+training rows only.
+
+`pipeline/model_data.py` selects the appropriate representation for each model.
+Sequence inputs carry `(region, settlement_date)` in their index, not in their
+numeric feature columns. Production sequence models reject mixed regions,
+duplicate/reversed timestamps and missing intervals. They do not interpolate
+missing observations. Unindexed frames still support positional experiments,
+but timestamp checks require the metadata supplied by the pipeline adapters.
+
+For separate prediction calls, explicitly pass recent observations:
+
+```python
+predictions = model.predict(current_features, history=recent_features)
+```
+
+History must end immediately before the current frame and contain at least
+`sequence_length - 1` observations. Without explicit history, the stored
+training tail is used and checked against current timestamps. History is not
+mutated by prediction calls. Both frames must use the same temporal index.
+
+To add another neural architecture, subclass `TorchForecastModel`, implement
+`_build_network(input_size)`, and set `requires_sequence = True` plus a
+`sequence_length` for temporal models. Forward passes return `(batch, 1)`.
+The shared wrapper returns `(N,)` forecasts on the configured target scale.
+New row-based models can continue implementing `Model.train()` and `predict()`.
+Register a model factory and its hyperparameter grid in `main.py`.
+
+The current interface deliberately covers one region and one forecast horizon.
+Multi-horizon targets and separate known-future covariate tensors would require
+an explicit extended output/input contract; future actuals must never be used
+as known-future inputs.
+
+### Reproducible model comparisons
+
+```bash
+python main.py --models gru transformer --folds 3 --metric rmse --seed 42
+```
+
+The Transformer is opt-in; omitting `--models` keeps the XGBoost/MLP/GRU defaults.
+`--folds 1` uses the usual holdout; larger counts use expanding training windows
+and disjoint validation blocks, each of size approximately
+`validation_fraction * training_rows`. Leave enough initial training data for
+the lookback and embargo. Scores pool the validation errors across folds. The
+selection metric also controls neural checkpoint selection. Final neural refits
+use the median selected epoch across folds, even when `max_epochs` was omitted
+from the grid. Seeds come from `ExperimentConfig`/`--seed` unless a candidate
+explicitly sets its own `random_seed`.
+
+Runs save configuration, dependency versions, data provenance, trial/fold
+scores, per-origin predictions, training history and fitted CPU model bundles
+(including scalers and history) under `reports/runs/<unique-run-id>/`.
+Use `--output-dir` to choose a location or `--no-save` to disable saving. Load
+your own model bundles with `joblib.load`; do not load untrusted joblib files.
+
+Prepared caches live under this repository's `model_cache`. Compatibility now
+includes the feature configuration, preparation code and local raw-cache file
+identities (path, size and modification time). Changes in upstream data that
+have not been downloaded cannot be detected automatically. `--refresh` rebuilds
+prepared data through ingestion; existing ingestion caches may still be reused.
 
 `python main.py` then:
 
@@ -88,8 +181,9 @@ Or select one or more models from the command line:
 
 ```bash
 python main.py --models mlp
+python main.py --models gru
 python main.py --models xgboost
-python main.py --models mlp xgboost
+python main.py --models mlp gru xgboost
 ```
 
 ### Target Types
@@ -403,6 +497,7 @@ evaluation should use reconstructed RRP forecasts against `target_rrp`.
 ├── pipeline/
 │   ├── data_cleaning/                   AEMO ingestion and raw caches
 │   ├── preprocessing/                   shared feature and sequence preparation
+│   ├── sequences.py                     lazy datasets for sequence models
 │   ├── evaluation.py                    common result metrics
 │   ├── experiment_pipeline.py           experiment preparation and diagnostics
 │   ├── model.py                         abstract model interface
