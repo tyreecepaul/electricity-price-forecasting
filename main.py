@@ -93,6 +93,25 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "huber_delta": [1.0],
         },
     ),
+    (
+        TCNModel,
+        {
+            "sequence_length": [12],
+            "channels": [16],
+            "kernel_size": [3],
+            "num_blocks": [2],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [512],
+            "prediction_batch_size": [2048],
+            "max_epochs": [10],
+            "patience": [2],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+        },    
+    )
 ]
 
 def model_cli_name(model_factory: type[Model]) -> str:
