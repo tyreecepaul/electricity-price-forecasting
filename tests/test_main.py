@@ -50,6 +50,14 @@ def test_cli_selects_gru():
     assert [factory.model_name for factory, _ in selected] == ["GRU"]
 
 
+def test_cli_selects_lstm():
+    module = load_main_module()
+
+    selected = module.select_model_registry(["lstm"])
+
+    assert [factory.model_name for factory, _ in selected] == ["LSTM"]
+
+
 def test_cli_defaults_to_all_registered_models():
     module = load_main_module()
 

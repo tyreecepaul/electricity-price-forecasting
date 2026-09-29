@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from electricity_price_forecasting_model.final_model.gru import GRUModel
+from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
@@ -22,8 +23,8 @@ from pipeline.model_data import final_training_data, predict_test
 from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
-    region="NSW1",
-    horizon_minutes=5,
+    region="VIC1",
+    horizon_minutes=30,
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -58,6 +59,24 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     ),
     (
         GRUModel,
+        {
+            "sequence_length": [12],
+            "hidden_size": [16],
+            "num_layers": [1],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [512],
+            "prediction_batch_size": [2048],
+            "max_epochs": [10],
+            "patience": [2],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+        },
+    ),
+    (
+        LSTMModel,
         {
             "sequence_length": [12],
             "hidden_size": [16],

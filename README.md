@@ -91,8 +91,8 @@ sequence batch is useful for analysis or another deep-learning framework.
 The common neural lifecycle lives in `pipeline/neural.py`: fitted imputation
 and scaling, target transforms, deterministic seeding, batched training and
 inference, checkpoint selection, optional gradient clipping, StepLR scheduling,
-and CUDA mixed precision. MLP and GRU use it, and future sequence architectures
-such as Transformers can reuse the same lifecycle.
+and CUDA mixed precision. MLP, GRU, and LSTM use it, and future sequence
+architectures such as Transformers can reuse the same lifecycle.
 
 ### Temporal data and model extensions
 
@@ -181,8 +181,9 @@ Or select one or more models from the command line:
 ```bash
 python main.py --models mlp
 python main.py --models gru
+python main.py --models lstm
 python main.py --models xgboost
-python main.py --models mlp gru xgboost
+python main.py --models mlp gru lstm xgboost
 ```
 
 ### Target Types
