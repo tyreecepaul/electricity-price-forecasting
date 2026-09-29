@@ -45,6 +45,7 @@ class TemporalBlock(nn.Module):
         self.conv1: CausalConv1d = CausalConv1d(in_channels, channels, kernel_size, dilation)
         self.conv2: CausalConv1d = CausalConv1d(channels, channels, kernel_size, dilation)
         self.activation: nn.ReLU = nn.ReLU()
+        self.dropout: nn.Dropout = nn.Dropout(dropout)
         self.shortcut: nn.Module = (
             nn.Identity() 
             if in_channels == channels 
@@ -70,7 +71,7 @@ class TCNNetwork(nn.Module):
     ) -> None:
         """Build residual blocks with dilations 1, 2, 4 and so on"""
         super().__init__()
-        if input.size <= 0 or channels <= 0 or kernel_size < 2 or num_blocks <= 0:
+        if input_size <= 0 or channels <= 0 or kernel_size < 2 or num_blocks <= 0:
             raise ValueError("Invalid TCN dimensions")
         if not 0 <= dropout < 1:
             raise ValueError("droput must be in [0,1)")
@@ -90,14 +91,14 @@ class TCNNetwork(nn.Module):
         self.blocks: nn.Sequential = nn.Sequential(*blocks)
         self.output: nn.Linear = nn.Linear(channels, 1)
 
-        def temporal_features(self, inputs: torch.Tensor) -> torch.Tensor:
-            """Return features shaped (batch, channels, time)"""
-            if inputs.ndim != 3 or inputs.shape[-1] != self.input_size:
-                raise ValueError("Expected (batch, time, input_size)")
-            channels_first: torch.Tensor = inputs.transpose(1,2)
-            return self.blocks(channels_first)
-        
-        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-            """Return one scalar forecast per input window"""
-            latest_features: torch.Tensor = self.temporal_features(inputs)[:, :, -1]
-            return self.output(latest_features)
+    def temporal_features(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Return features shaped (batch, channels, time)"""
+        if inputs.ndim != 3 or inputs.shape[-1] != self.input_size:
+            raise ValueError("Expected (batch, time, input_size)")
+        channels_first: torch.Tensor = inputs.transpose(1,2)
+        return self.blocks(channels_first)
+    
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Return one scalar forecast per input window"""
+        latest_features: torch.Tensor = self.temporal_features(inputs)[:, :, -1]
+        return self.output(latest_features)

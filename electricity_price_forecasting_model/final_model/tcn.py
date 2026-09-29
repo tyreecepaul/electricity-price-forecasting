@@ -3,7 +3,7 @@ from __future__ import annotations
 from random import random
 
 from torch import nn
-from electricity_price_forecasting_model.layers import TCNNetwork
+from electricity_price_forecasting_model.layers.tcn import TCNNetwork
 from pipeline.neural import TorchForecastModel
 
 class TCNModel(TorchForecastModel):
