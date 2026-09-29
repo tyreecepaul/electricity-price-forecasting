@@ -111,6 +111,7 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "min_delta": [0.001],
             "loss": ["huber"],
             "huber_delta": [1.0],
+            "device": ["mps"]
         },    
     )
 ]

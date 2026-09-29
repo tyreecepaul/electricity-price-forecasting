@@ -35,7 +35,8 @@ class TCNModel(TorchForecastModel):
         scheduler_step_size: int | None = None,
         scheduler_gamma: float = 0.5,
         mixed_precision: bool = False,
-        interval_minutes: int = 5
+        interval_minutes: int = 5,
+        show_progress: bool = True
     ) -> None:
         """Validate TCN settings and configure training options"""
         architecture_sizes: tuple[tuple[str, int], ...] = (
@@ -58,6 +59,7 @@ class TCNModel(TorchForecastModel):
         self.kernel_size: int = int(kernel_size)
         self.num_blocks: int = int(num_blocks)
         self.dropout: float = float(dropout)
+        self.show_progress: bool = show_progress
 
         super().__init__(
             learning_rate=learning_rate,

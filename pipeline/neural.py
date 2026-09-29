@@ -11,6 +11,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from collections.abc import Iterable, Sequence
+from contextlib import ExitStack
+
+from tqdm.auto import tqdm
+
 from pipeline.contracts import (
     METRIC_NAMES,
     forecast_vector,
@@ -43,6 +48,7 @@ class TorchForecastModel(Model):
     """
 
     sequence_length = 1
+    show_progress: bool = False
 
     def __init__(
         self,
@@ -276,31 +282,46 @@ class TorchForecastModel(Model):
         amp_enabled = bool(self.mixed_precision and self.device.type == "cuda")
         scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
-        def train_epoch():
+        epoch_number: int = 0
+
+        def train_epoch() -> float:
             """Run one pass over fitting samples and return their mean loss."""
+            nonlocal epoch_number
+            epoch_number += 1
             self.network.train()
             total = 0.0
-            for xb, yb in loader:
-                xb, yb = xb.to(self.device), yb.to(self.device)
-                optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(device_type=self.device.type, enabled=amp_enabled):
-                    prediction = self.network(xb)
-                    if prediction.shape != yb.shape:
-                        raise ValueError(
-                            f"Network output {prediction.shape} must match targets {yb.shape}"
+            with ExitStack() as stack:
+                batches: Iterable[Sequence[torch.Tensor]] = loader 
+                if self.show_progress:
+                    batches = stack.enter_context(
+                        tqdm(
+                            loader,
+                            total=len(loader),
+                            desc=f"{self.get_model_name()} epoch {epoch_number}/{self.max_epochs}",
+                            leave=False
                         )
-                    loss = criterion(prediction, yb)
-                scaler.scale(loss).backward()
-                if self.gradient_clip_norm is not None:
-                    # AMP scales gradients to protect small values. Undo that
-                    # scaling before clipping so the threshold has its usual units.
-                    scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(
-                        self.network.parameters(), self.gradient_clip_norm
                     )
-                scaler.step(optimizer)
-                scaler.update()
-                total += loss.item() * len(xb)
+                for xb, yb in batches:
+                    xb, yb = xb.to(self.device), yb.to(self.device)
+                    optimizer.zero_grad(set_to_none=True)
+                    with torch.autocast(device_type=self.device.type, enabled=amp_enabled):
+                        prediction = self.network(xb)
+                        if prediction.shape != yb.shape:
+                            raise ValueError(
+                                f"Network output {prediction.shape} must match targets {yb.shape}"
+                            )
+                        loss = criterion(prediction, yb)
+                    scaler.scale(loss).backward()
+                    if self.gradient_clip_norm is not None:
+                        # AMP scales gradients to protect small values. Undo that
+                        # scaling before clipping so the threshold has its usual units.
+                        scaler.unscale_(optimizer)
+                        nn.utils.clip_grad_norm_(
+                            self.network.parameters(), self.gradient_clip_norm
+                        )
+                    scaler.step(optimizer)
+                    scaler.update()
+                    total += loss.item() * len(xb)
             # Weight by batch size above so a short final batch is not overcounted.
             if scheduler is not None:
                 scheduler.step()
