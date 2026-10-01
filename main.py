@@ -10,6 +10,7 @@ from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from electricity_price_forecasting_model.final_model.tcn import TCNModel
+from electricity_price_forecasting_model.final_model.transformer import TransformerModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
@@ -75,6 +76,26 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "loss": ["huber"],
             "huber_delta": [1.0],
         },
+
+        TransformerModel, #needs to be checked, may not run CALL ME!!!!!
+        {
+            "sequence_length": [36],
+            "d_model": [32],
+            "nhead": [4],
+            "num_layers": [2],
+            "dim_feedforward": [64],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [128],
+            "prediction_batch_size": [256],
+            "max_epochs": [20],
+            "patience": [3],
+            "min_delta": [0.001],
+            "loss": ["mse", "huber"],
+            "huber_delta": [1.0],
+
+        }
     ),
     (
         LSTMModel,
