@@ -1,6 +1,6 @@
-from electricity_price_forecasting_model.layers.transformer_layers.transformerLayers import DecoderTransformer
+from __future__ import annotations
 
-from future import annotations
+from electricity_price_forecasting_model.layers.transformer_layers.transformerLayer import DecoderTransformer
 
 from torch import nn
 

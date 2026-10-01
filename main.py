@@ -77,7 +77,9 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "huber_delta": [1.0],
         },
 
-        TransformerModel, #needs to be checked, may not run CALL ME!!!!!
+    ),
+    (
+        TransformerModel,
         {
             "sequence_length": [36],
             "d_model": [32],
@@ -132,7 +134,7 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "min_delta": [0.001],
             "loss": ["huber"],
             "huber_delta": [1.0],
-            "device": ["mps"]
+            "device": [None],
         },    
     )
 ]
@@ -149,7 +151,7 @@ def select_model_registry(
     if selected_models is None:
         return MODEL_REGISTRY
 
-    requested = set(selected_models)
+    requested = {name.lower() for name in selected_models}
     available = {model_cli_name(factory) for factory, _ in MODEL_REGISTRY}
     unknown = requested.difference(available)
     if unknown:
@@ -169,6 +171,7 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
+        type=str.lower,
         choices=sorted(model_cli_name(factory) for factory, _ in MODEL_REGISTRY),
         help="Models to run. Defaults to all registered models.",
     )

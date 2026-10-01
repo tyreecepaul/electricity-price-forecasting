@@ -83,6 +83,16 @@ def test_cli_defaults_to_all_registered_models():
     assert module.select_model_registry(args.models) == module.MODEL_REGISTRY
 
 
+def test_cli_accepts_uppercase_tcn_and_uses_automatic_device_selection():
+    module = load_main_module()
+
+    args = module.parse_args(["--models", "TCN"])
+    assert args.models == ["tcn"]
+    selected = module.select_model_registry(["TCN"])
+    assert [factory.model_name for factory, _ in selected] == ["TCN"]
+    assert selected[0][1]["device"] == [None]
+
+
 def test_cli_parses_multiple_models():
     module = load_main_module()
 
