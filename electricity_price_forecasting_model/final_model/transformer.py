@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from torch import nn
 
-from electricity_price_forecasting_model.layers.transformer import (
-    TransformerForecastNetwork,
-)
 from pipeline.neural import TorchForecastModel
 from electricity_price_forecasting_model.layers.transformer_layers.forecaster import Forecaster
 
@@ -79,9 +76,10 @@ class TransformerModel(TorchForecastModel):
 
     def _build_network(self, input_size: int) -> nn.Module:
         return Forecaster(
+            input_size=input_size,
             d_model=self.d_model,
             nhead=self.nhead,
             num_layers=self.num_layers,
             dim_feedforward=self.dim_feedforward,
-            n_epochs=self.max_epochs,
+            dropout=self.dropout,
         )
