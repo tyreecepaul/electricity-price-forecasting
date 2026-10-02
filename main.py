@@ -9,6 +9,7 @@ from electricity_price_forecasting_model.final_model.transformer import Transfor
 from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
+from electricity_price_forecasting_model.final_model.tcn import TCNModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
