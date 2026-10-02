@@ -1,5 +1,7 @@
 """Regression coverage for temporal alignment and shared model integration."""
 
+import importlib
+import importlib.util
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -120,6 +122,36 @@ def test_explicit_context_is_invariant_to_prediction_chunks(experiment):
     with pytest.raises(ValueError, match="gaps"):
         model.predict(current.iloc[4:])  # stale fallback cannot bridge the time gap
     assert len(predict_test(model, experiment.prepared)) == len(experiment.test_df)
+
+
+def test_tcn_runs_through_selection_refit_and_test_alignment(experiment):
+    name = "electricity_price_forecasting_model.final_model.tcn"
+    assert importlib.util.find_spec(name) is not None, "TCN model module is missing"
+    TCNModel = importlib.import_module(name).TCNModel
+    grid = {
+        "sequence_length": [3],
+        "channels": [4],
+        "kernel_size": [3],
+        "num_blocks": [1],
+        "dropout": [0.0],
+        "batch_size": [8],
+        "max_epochs": [1],
+        "device": ["cpu"],
+    }
+
+    search = search_hyperparameters(TCNModel, grid, experiment, verbose=False)
+    model = TCNModel(**search.best_config)
+    model.train(*final_training_data(model, experiment.prepared))
+    predictions = predict_test(model, experiment.prepared)
+    prices = reconstruct_price_forecast(
+        experiment.test_df, predictions, experiment.config
+    )
+    result = evaluate(model, experiment.test_df["target_rrp"].to_numpy(), prices)
+
+    assert search.best_config["sequence_length"] == 3
+    assert len(predictions) == len(experiment.test_df)
+    assert np.isfinite(predictions).all()
+    assert np.isfinite(result.metrics["mae"])
 
 
 @pytest.mark.parametrize("problem", ["gap", "reverse", "duplicate", "region"])

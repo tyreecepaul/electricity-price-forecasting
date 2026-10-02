@@ -58,6 +58,22 @@ def test_cli_selects_lstm():
     assert [factory.model_name for factory, _ in selected] == ["LSTM"]
 
 
+def test_cli_selects_tcn_with_the_initial_comparison_window():
+    module = load_main_module()
+
+    assert "tcn" in [module.model_cli_name(factory) for factory, _ in module.MODEL_REGISTRY]
+    selected = module.select_model_registry(["tcn"])
+
+    assert [factory.model_name for factory, _ in selected] == ["TCN"]
+    grid = selected[0][1]
+    assert grid["sequence_length"] == [12]
+    assert grid["channels"] == [16]
+    assert grid["kernel_size"] == [3]
+    assert grid["num_blocks"] == [2]
+    assert all(len(values) == 1 for values in grid.values())
+    assert module.parse_args(["--models", "tcn"]).models == ["tcn"]
+
+
 def test_cli_defaults_to_all_registered_models():
     module = load_main_module()
 
@@ -65,6 +81,16 @@ def test_cli_defaults_to_all_registered_models():
 
     assert args.models is None
     assert module.select_model_registry(args.models) == module.MODEL_REGISTRY
+
+
+def test_cli_accepts_uppercase_tcn_and_uses_automatic_device_selection():
+    module = load_main_module()
+
+    args = module.parse_args(["--models", "TCN"])
+    assert args.models == ["tcn"]
+    selected = module.select_model_registry(["TCN"])
+    assert [factory.model_name for factory, _ in selected] == ["TCN"]
+    assert selected[0][1]["device"] == [None]
 
 
 def test_cli_parses_multiple_models():

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from torch import nn
 
-from electricity_price_forecasting_model.layers.transformer import (
-    TransformerForecastNetwork,
-)
 from pipeline.neural import TorchForecastModel
 from electricity_price_forecasting_model.layers.transformer_layers.forecaster import Forecaster
 
