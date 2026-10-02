@@ -76,9 +76,10 @@ class TransformerModel(TorchForecastModel):
 
     def _build_network(self, input_size: int) -> nn.Module:
         return Forecaster(
+            input_size=input_size,
             d_model=self.d_model,
             nhead=self.nhead,
             num_layers=self.num_layers,
             dim_feedforward=self.dim_feedforward,
-            n_epochs=self.max_epochs,
+            dropout=self.dropout,
         )

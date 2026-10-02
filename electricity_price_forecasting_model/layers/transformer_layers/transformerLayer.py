@@ -3,11 +3,13 @@ from random import random
 import torch.nn as nn
 
 class MaskAttention(nn.Module):
-    def __init__(self, d_model, nhead):
+    def __init__(self, d_model, nhead, dropout=0.0):
         super(MaskAttention, self).__init__()
         self.d_model = d_model
         self.nhead = nhead
-        self.attention = nn.MultiheadAttention(d_model, nhead)
+        self.attention = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
 
     def forward(self, x, mask=None):
         # x shape: (seq_len, batch_size, d_model)
@@ -15,39 +17,44 @@ class MaskAttention(nn.Module):
         return attn_output
 
 class FeedForward(nn.Module): # two layer fully connected feed foward network
-    def __init__(self, d_model, dim_feedforward=2048):
+    def __init__(self, d_model, dim_feedforward=2048, dropout=0.0):
         super(FeedForward, self).__init__()
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         # Main feed forward
         x = self.linear1(x)
         x = self.relu(x)
+        x = self.dropout(x)
         x = self.linear2(x)
         return x
 
-class DecoderBlock(nn.Module): #no dropout
-    def __init__(self, d_model, nhead, dim_feedforward=2048):
+class DecoderBlock(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.0):
         super(DecoderBlock, self).__init__()
-        self.self_attn = MaskAttention(d_model, nhead)
-        self.feed_forward = FeedForward(d_model, dim_feedforward)
-        self.norm = nn.LayerNorm(d_model)
+        self.self_attn = MaskAttention(d_model, nhead, dropout)
+        self.feed_forward = FeedForward(d_model, dim_feedforward, dropout)
+        self.attention_norm = nn.LayerNorm(d_model)
+        self.feed_forward_norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask=None):
         # Main decoder
         attn_output = self.self_attn(x, mask)
-        x = self.norm(x + attn_output) # residual connection
+        x = self.attention_norm(x + self.dropout(attn_output))
         feed_forward_out = self.feed_forward(x)
-        x = self.norm(x + feed_forward_out) # residual connection
+        x = self.feed_forward_norm(x + self.dropout(feed_forward_out))
         return x
 
 class DecoderTransformer(nn.Module):
-    def __init__(self, d_model, nhead, num_layers, dim_feedforward=2048):
+    def __init__(self, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.0):
         super(DecoderTransformer, self).__init__()
         self.layers = nn.ModuleList([
-            DecoderBlock(d_model, nhead, dim_feedforward) for _ in range(num_layers)
+            DecoderBlock(d_model, nhead, dim_feedforward, dropout)
+            for _ in range(num_layers)
         ])
         self.norm = nn.LayerNorm(d_model)
 
