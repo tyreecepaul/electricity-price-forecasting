@@ -114,6 +114,26 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "huber_delta": [1.0],
         },
     ),
+    (
+        TCNModel,
+        {
+            "sequence_length": [12],
+            "channels": [16],
+            "kernel_size": [3],
+            "num_blocks": [2],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [512],
+            "prediction_batch_size": [2048],
+            "max_epochs": [10],
+            "patience": [2],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+            "device": [None],
+        },    
+    )
 ]
 
 def model_cli_name(model_factory: type[Model]) -> str:
@@ -128,7 +148,7 @@ def select_model_registry(
     if selected_models is None:
         return MODEL_REGISTRY
 
-    requested = set(selected_models)
+    requested = {name.lower() for name in selected_models}
     available = {model_cli_name(factory) for factory, _ in MODEL_REGISTRY}
     unknown = requested.difference(available)
     if unknown:
@@ -148,6 +168,7 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
+        type=str.lower,
         choices=sorted(model_cli_name(factory) for factory, _ in MODEL_REGISTRY),
         help="Models to run. Defaults to all registered models.",
     )
