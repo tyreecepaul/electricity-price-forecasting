@@ -9,7 +9,6 @@ computes MAE/RMSE per region directly instead of calling it.
 from __future__ import annotations
 
 import numpy as np
-/
 from gat_model import GATModel
 from graph_data import REGION_ORDER, load_graph_data
 
