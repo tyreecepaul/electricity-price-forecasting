@@ -34,6 +34,17 @@ from pipeline.sequences import ContextSequenceDataset, SequenceDataset
 from pipeline.training import TorchEarlyStoppingTrainer
 
 
+def set_random_seed(seed: int) -> None:
+    """Seed every generator a PyTorch fit depends on."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
 class TorchForecastModel(Model):
     """Subclasses supply a network; this wrapper owns the forecasting lifecycle.
 
@@ -130,13 +141,7 @@ class TorchForecastModel(Model):
         """Return an untrained network producing one scalar per sample."""
 
     def _set_random_seed(self):
-        random.seed(self.random_seed)
-        np.random.seed(self.random_seed)
-        torch.manual_seed(self.random_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(self.random_seed)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
+        set_random_seed(self.random_seed)
 
     def _build_criterion(self):
         """Choose the optimization loss, evaluated in transformed target space."""

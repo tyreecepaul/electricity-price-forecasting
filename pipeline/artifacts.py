@@ -15,7 +15,7 @@ import joblib
 import pandas as pd
 
 
-def create_run_directory(config, output_directory: Path) -> Path:
+def create_run_directory(config, output_directory: Path, prepared=None) -> Path:
     """Create a unique run folder and record configuration/data/environment provenance."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = output_directory / f"{stamp}-{uuid4().hex[:8]}"
@@ -29,13 +29,18 @@ def create_run_directory(config, output_directory: Path) -> Path:
             for name in ("numpy", "pandas", "torch", "scikit-learn", "xgboost")
         },
     }
+    diagnostics = getattr(prepared, "embedding_diagnostics", None)
+    if diagnostics:
+        manifest["graph_embedding_diagnostics"] = diagnostics
     (directory / "experiment.json").write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
     )
     return directory
 
 
-def save_model_run(directory, model, search_result, test_df, predictions, result):
+def save_model_run(
+    directory, model, search_result, test_df, predictions, result, extra_columns=()
+):
     """Save one selected model, its search results and aligned test-price forecasts.
 
     The bundle includes preprocessing and context for inference, not optimizer
@@ -63,7 +68,14 @@ def save_model_run(directory, model, search_result, test_df, predictions, result
     rows = test_df[
         [
             c
-            for c in ("region", "settlement_date", "rrp", "target_rrp", "target")
+            for c in (
+                "region",
+                "settlement_date",
+                "rrp",
+                "target_rrp",
+                "target",
+                *extra_columns,
+            )
             if c in test_df
         ]
     ].copy()

@@ -20,6 +20,7 @@ from pipeline.experiment_pipeline import (
     print_experiment_summary,
     reconstruct_price_forecast,
 )
+from pipeline.graph_embedding import GraphEmbeddingConfig
 from pipeline.model import Model
 from pipeline.model_data import final_training_data, predict_test
 from pipeline.tuning import SearchResult, search_hyperparameters
@@ -191,6 +192,11 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Rebuild prepared data from ingestion/cache",
     )
+    parser.add_argument(
+        "--graph-embedding",
+        action="store_true",
+        help="Append graph-encoder embeddings of all NEM regions to the features.",
+    )
     return parser.parse_args(arguments)
 
 
@@ -222,6 +228,7 @@ def main(
             Path(output_directory)
             if output_directory is not None
             else Path(__file__).resolve().parent / "reports" / "runs",
+            prepared,
         )
         if save_results
         else None
@@ -263,6 +270,7 @@ def main(
                 experiment.test_df,
                 predicted_price,
                 result,
+                extra_columns=(experiment.config.aemo_forecast_column,),
             )
 
     print_evaluation_summary(results, prepared)
@@ -280,6 +288,11 @@ if __name__ == "__main__":
             walk_forward_folds=cli_args.folds,
             selection_metric=cli_args.metric,
             random_seed=cli_args.seed,
+            graph_embedding=(
+                GraphEmbeddingConfig()
+                if cli_args.graph_embedding
+                else EXPERIMENT.graph_embedding
+            ),
         ),
         output_directory=cli_args.output_dir,
         save_results=not cli_args.no_save,
