@@ -39,7 +39,15 @@ def create_run_directory(config, output_directory: Path, prepared=None) -> Path:
 
 
 def save_model_run(
-    directory, model, search_result, test_df, predictions, result, extra_columns=()
+    directory,
+    model,
+    search_result,
+    test_df,
+    predictions,
+    result,
+    extra_columns=(),
+    prepared=None,
+    graph_embedding=None,
 ):
     """Save one selected model, its search results and aligned test-price forecasts.
 
@@ -58,6 +66,11 @@ def save_model_run(
         "validation_score": search_result.best_score,
         "test_metrics": result.metrics,
         "features": getattr(model, "feature_columns", []),
+        # Models in one run may train on different graph-embedding features.
+        "graph_embedding": asdict(graph_embedding) if graph_embedding else None,
+        "graph_embedding_diagnostics": getattr(
+            prepared, "embedding_diagnostics", None
+        ),
         "training": asdict(model.training_result)
         if getattr(model, "training_result", None)
         else None,

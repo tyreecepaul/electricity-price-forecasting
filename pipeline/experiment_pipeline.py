@@ -47,18 +47,7 @@ def source_fingerprint() -> str:
     Upstream revisions not downloaded locally still require force_refresh.
     """
     digest = hashlib.sha256()
-    sources = [
-        *sorted((PROJECT_ROOT / "pipeline" / "preprocessing").glob("*.py")),
-        *sorted((PROJECT_ROOT / "pipeline" / "graph_embedding").glob("*.py")),
-        *sorted(
-            (
-                PROJECT_ROOT
-                / "electricity_price_forecasting_model"
-                / "layers"
-                / "gnn_layers"
-            ).glob("*.py")
-        ),
-    ]
+    sources = sorted((PROJECT_ROOT / "pipeline" / "preprocessing").glob("*.py"))
     for source in sources:
         digest.update(source.name.encode())
         digest.update(source.read_bytes())
@@ -71,6 +60,21 @@ def source_fingerprint() -> str:
                 digest.update(
                     f"{path.relative_to(PROJECT_ROOT)}:{stat.st_size}:{stat.st_mtime_ns}".encode()
                 )
+    return digest.hexdigest()
+
+
+def graph_source_fingerprint() -> str:
+    """Fingerprint the graph-encoder code, used only when the stage is enabled.
+
+    Kept apart from ``source_fingerprint`` so editing the encoder does not
+    invalidate prepared data for experiments that never use it.
+    """
+    digest = hashlib.sha256()
+    layers = PROJECT_ROOT / "electricity_price_forecasting_model" / "layers" / "gnn_layers"
+    for directory in (PROJECT_ROOT / "pipeline" / "graph_embedding", layers):
+        for source in sorted(directory.glob("*.py")):
+            digest.update(source.name.encode())
+            digest.update(source.read_bytes())
     return digest.hexdigest()
 
 
@@ -169,6 +173,7 @@ class ExperimentConfig:
         }
         if self.graph_embedding is not None:
             metadata["graph_embedding"] = asdict(self.graph_embedding)
+            metadata["graph_source_fingerprint"] = graph_source_fingerprint()
         return metadata
 
     def graph_embedding_cache_metadata(self) -> dict[str, object]:

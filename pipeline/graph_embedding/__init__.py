@@ -5,12 +5,20 @@ experiment pipeline, so importing this package stays cheap.
 """
 
 from .config import DEFAULT_NODE_FEATURES, GraphEmbeddingConfig
-from .graph import DEFAULT_REGIONS, NEM_INTERCONNECTORS, adjacency
+from .graph import (
+    DEFAULT_REGIONS,
+    EDGE_FEATURES,
+    NEM_INTERCONNECTORS,
+    adjacency,
+    edge_pairs,
+)
 
 __all__ = [
     "DEFAULT_NODE_FEATURES",
     "DEFAULT_REGIONS",
+    "EDGE_FEATURES",
     "GraphEmbeddingConfig",
     "NEM_INTERCONNECTORS",
     "adjacency",
+    "edge_pairs",
 ]

@@ -20,6 +20,25 @@ NEM_INTERCONNECTORS: dict[str, tuple[str, str]] = {
 }
 
 
+EDGE_FEATURES: tuple[str, ...] = ("flow", "utilisation", "headroom")
+
+
+def edge_pairs(
+    regions: Sequence[str] = DEFAULT_REGIONS,
+) -> list[tuple[int, int, tuple[str, ...]]]:
+    """Return ``(from_node, to_node, column_prefixes)`` once per linked pair.
+
+    Parallel interconnectors share one pair. The orientation follows the
+    table, which is the direction of positive metered flow.
+    """
+    position = {region: index for index, region in enumerate(regions)}
+    grouped: dict[tuple[int, int], list[str]] = {}
+    for prefix, (first, second) in NEM_INTERCONNECTORS.items():
+        if first in position and second in position:
+            grouped.setdefault((position[first], position[second]), []).append(prefix)
+    return [(a, b, tuple(prefixes)) for (a, b), prefixes in grouped.items()]
+
+
 def adjacency(regions: Sequence[str] = DEFAULT_REGIONS, mode: str = "nem") -> np.ndarray:
     """Return a symmetric 0/1 matrix with self-loops in the given node order.
 

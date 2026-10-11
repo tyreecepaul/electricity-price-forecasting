@@ -14,6 +14,10 @@ class GraphAttentionLayer(nn.Module):
     ``adjacency`` is a (num_nodes, num_nodes) 0/1 matrix with self-loops.
     Non-edges receive -inf before the softmax, so a node attends only to
     itself and its directly connected regions.
+
+    With ``edge_size`` > 0, ``forward`` also takes edge attributes of shape
+    (batch, num_nodes, num_nodes, edge_size). They shift each head's score for
+    that pair, letting attention depend on the state of the link itself.
     """
 
     def __init__(
@@ -22,6 +26,7 @@ class GraphAttentionLayer(nn.Module):
         adjacency: torch.Tensor,
         num_heads: int = 4,
         dropout: float = 0.1,
+        edge_size: int = 0,
     ) -> None:
         super().__init__()
         if features % num_heads != 0:
@@ -52,8 +57,11 @@ class GraphAttentionLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(features)
         self.activation = nn.GELU()
+        self.edge_proj = nn.Linear(edge_size, num_heads) if edge_size else None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, edge_attr: torch.Tensor | None = None
+    ) -> torch.Tensor:
         batch_size, num_nodes, _ = x.shape
 
         def split_heads(t: torch.Tensor) -> torch.Tensor:
@@ -64,6 +72,8 @@ class GraphAttentionLayer(nn.Module):
         v = split_heads(self.value_proj(x))
 
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim**0.5)
+        if self.edge_proj is not None and edge_attr is not None:
+            scores = scores + self.edge_proj(edge_attr).permute(0, 3, 1, 2)
         attention = torch.softmax(scores + self.attention_mask, dim=-1)
         attention = self.dropout(attention)
 

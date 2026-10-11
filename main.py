@@ -138,6 +138,39 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     )
 ]
 
+# Graph-embedding features each model trains on. Unlisted models use
+# EXPERIMENT.graph_embedding, which is None unless set above.
+MODEL_GRAPH_EMBEDDING: dict[type[Model], GraphEmbeddingConfig | None] = {
+    # Same encoder without cross-region edges.
+    XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),
+    LSTMModel: GraphEmbeddingConfig(),
+}
+GRAPH_EMBEDDING_CHOICES: dict[str, GraphEmbeddingConfig | None] = {
+    "none": None,
+    "nem": GraphEmbeddingConfig(),
+    "identity": GraphEmbeddingConfig(adjacency_mode="identity"),
+}
+
+# Wider grids used instead of the registry entry when --sweep is passed.
+SWEEP_GRIDS: dict[type[Model], dict[str, Sequence]] = {
+    LSTMModel: {
+        "sequence_length": [12, 24, 36],
+        "hidden_size": [16, 32, 64],
+        "num_layers": [1, 2],
+        "dropout": [0.0],
+        "learning_rate": [0.001],
+        "weight_decay": [0.0001],
+        "batch_size": [512],
+        "prediction_batch_size": [2048],
+        "max_epochs": [20],
+        "patience": [3],
+        "min_delta": [0.001],
+        "loss": ["huber"],
+        "huber_delta": [1.0],
+    },
+}
+
+
 def model_cli_name(model_factory: type[Model]) -> str:
     """Return the stable command-line name for a registered model."""
     return model_factory.model_name.lower().replace(" ", "-")
@@ -194,8 +227,19 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--graph-embedding",
+        nargs="?",
+        choices=["per-model", *GRAPH_EMBEDDING_CHOICES],
+        default="per-model",
+        const="nem",
+        help=(
+            "Graph-encoder features: per-model uses MODEL_GRAPH_EMBEDDING; "
+            "none, nem (the bare flag) or identity apply to every model."
+        ),
+    )
+    parser.add_argument(
+        "--sweep",
         action="store_true",
-        help="Append graph-encoder embeddings of all NEM regions to the features.",
+        help="Use the wider SWEEP_GRIDS entry for models that have one.",
     )
     return parser.parse_args(arguments)
 
@@ -207,71 +251,106 @@ def main(
     output_directory=None,
     save_results=True,
     force_refresh=False,
+    graph_embeddings=None,
+    sweep=False,
 ) -> None:
     """Prepare shared data, select/refit each model, then score the held-out test.
 
     Temporal representation choices live in model_data; model-specific network
     and fitting details stay behind the common model interface.
+
+    ``graph_embeddings`` maps a model class to its embedding config and
+    defaults to MODEL_GRAPH_EMBEDDING; other models use ``config``'s. Models
+    sharing an embedding share one prepared experiment.
     """
     config = config or EXPERIMENT
-    experiment: ExperimentData = (
-        prepare_experiment(config, force_refresh=True)
-        if force_refresh
-        else prepare_experiment(config)
-    )
-    print_experiment_summary(experiment)
+    if graph_embeddings is None:
+        graph_embeddings = MODEL_GRAPH_EMBEDDING
+    registry = select_model_registry(selected_models)
+    groups: dict[GraphEmbeddingConfig | None, list] = {}
+    for entry in registry:
+        embedding = graph_embeddings.get(entry[0], config.graph_embedding)
+        groups.setdefault(embedding, []).append(entry)
 
-    prepared = experiment.prepared
-    run_directory = (
-        create_run_directory(
-            config,
-            Path(output_directory)
-            if output_directory is not None
-            else Path(__file__).resolve().parent / "reports" / "runs",
-            prepared,
-        )
-        if save_results
-        else None
-    )
-
-    y_test_price: np.ndarray = experiment.test_df["target_rrp"].to_numpy()
-
-    # Fit each model and find optimal hyperparameters
+    run_directory = None
     results: list[ModelResult] = []
+    prepared = test_origins = None
 
-    for model_factory, hyperparam_grid in select_model_registry(selected_models):
-        print(f"=== {model_factory.model_name} ===")
-
-        search_result: SearchResult = search_hyperparameters(
-            model_factory, hyperparam_grid, experiment
+    for embedding, entries in groups.items():
+        group_config = (
+            config
+            if embedding == config.graph_embedding
+            else replace(config, graph_embedding=embedding)
         )
-
-        # Start a fresh fit on all pre-test data, using the selected epoch budget.
-        # Reusing the search model would leave out its validation-period training data.
-        model: Model = model_factory(**search_result.best_config)
-        x_train, y_train = final_training_data(model, prepared)
-        model.train(x_train, y_train)
-
-        y_pred: np.ndarray = predict_test(model, prepared)
-        # Model outputs may be price changes or AEMO residuals. Convert them to
-        # actual RRP units before comparing with prices and common baselines.
-        predicted_price: np.ndarray = reconstruct_price_forecast(
-            experiment.test_df, y_pred, experiment.config
+        experiment: ExperimentData = (
+            prepare_experiment(group_config, force_refresh=True)
+            if force_refresh
+            else prepare_experiment(group_config)
         )
+        print_experiment_summary(experiment)
 
-        result = evaluate(model, y_test_price, predicted_price)
+        prepared = experiment.prepared
+        # Embeddings only add columns, so every model must score the same rows.
+        origins = (
+            experiment.test_df["settlement_date"].to_numpy()
+            if "settlement_date" in experiment.test_df
+            else None
+        )
+        if test_origins is None:
+            test_origins = origins
+        elif origins is None or not np.array_equal(origins, test_origins):
+            raise RuntimeError("Graph-embedding variants produced different test rows")
 
-        results.append(result)
-        if run_directory is not None:
-            save_model_run(
-                run_directory,
-                model,
-                search_result,
-                experiment.test_df,
-                predicted_price,
-                result,
-                extra_columns=(experiment.config.aemo_forecast_column,),
+        if save_results and run_directory is None:
+            run_directory = create_run_directory(
+                config,
+                Path(output_directory)
+                if output_directory is not None
+                else Path(__file__).resolve().parent / "reports" / "runs",
+                # Encoder diagnostics describe the run only if all models share it.
+                prepared if len(groups) == 1 else None,
             )
+
+        y_test_price: np.ndarray = experiment.test_df["target_rrp"].to_numpy()
+
+        # Fit each model and find optimal hyperparameters
+        for model_factory, hyperparam_grid in entries:
+            print(f"=== {model_factory.model_name} ===")
+            if sweep:
+                hyperparam_grid = SWEEP_GRIDS.get(model_factory, hyperparam_grid)
+
+            search_result: SearchResult = search_hyperparameters(
+                model_factory, hyperparam_grid, experiment
+            )
+
+            # Start a fresh fit on all pre-test data, using the selected epoch budget.
+            # Reusing the search model would leave out its validation-period training data.
+            model: Model = model_factory(**search_result.best_config)
+            x_train, y_train = final_training_data(model, prepared)
+            model.train(x_train, y_train)
+
+            y_pred: np.ndarray = predict_test(model, prepared)
+            # Model outputs may be price changes or AEMO residuals. Convert them to
+            # actual RRP units before comparing with prices and common baselines.
+            predicted_price: np.ndarray = reconstruct_price_forecast(
+                experiment.test_df, y_pred, experiment.config
+            )
+
+            result = evaluate(model, y_test_price, predicted_price)
+
+            results.append(result)
+            if run_directory is not None:
+                save_model_run(
+                    run_directory,
+                    model,
+                    search_result,
+                    experiment.test_df,
+                    predicted_price,
+                    result,
+                    extra_columns=(experiment.config.aemo_forecast_column,),
+                    prepared=prepared,
+                    graph_embedding=embedding,
+                )
 
     print_evaluation_summary(results, prepared)
     if run_directory is not None:
@@ -288,13 +367,14 @@ if __name__ == "__main__":
             walk_forward_folds=cli_args.folds,
             selection_metric=cli_args.metric,
             random_seed=cli_args.seed,
-            graph_embedding=(
-                GraphEmbeddingConfig()
-                if cli_args.graph_embedding
-                else EXPERIMENT.graph_embedding
+            graph_embedding=GRAPH_EMBEDDING_CHOICES.get(
+                cli_args.graph_embedding, EXPERIMENT.graph_embedding
             ),
         ),
         output_directory=cli_args.output_dir,
         save_results=not cli_args.no_save,
         force_refresh=cli_args.refresh,
+        # An explicit choice applies to every model, overriding the per-model map.
+        graph_embeddings=None if cli_args.graph_embedding == "per-model" else {},
+        sweep=cli_args.sweep,
     )

@@ -39,10 +39,16 @@ class GraphEmbeddingConfig:
     ``fit_fraction`` is the leading share of the training period the encoder
     may learn from. It must end before the earliest model-selection validation
     block, otherwise downstream validation scores would be optimistic.
+
+    ``edge_features`` lets attention see interconnector flow, utilisation and
+    headroom. ``spread_loss_weight`` also trains the encoder to forecast the
+    price difference across each interconnector; zero disables it.
     """
 
     regions: tuple[str, ...] = DEFAULT_REGIONS
     adjacency_mode: Literal["nem", "identity"] = "nem"
+    edge_features: bool = True
+    spread_loss_weight: float = 0.5
     node_features: tuple[str, ...] | None = None
     sequence_length: int = 12
     embedding_dim: int = 8
@@ -91,6 +97,8 @@ class GraphEmbeddingConfig:
             raise ValueError("inner_validation_fraction must be between 0 and 1")
         if self.learning_rate <= 0 or self.weight_decay < 0 or self.min_delta < 0:
             raise ValueError("Invalid learning_rate, weight_decay or min_delta")
+        if self.spread_loss_weight < 0:
+            raise ValueError("spread_loss_weight must be non-negative")
         if self.huber_delta <= 0:
             raise ValueError("huber_delta must be positive")
 
