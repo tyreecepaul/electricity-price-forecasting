@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import random
+import copy
 from abc import abstractmethod
 
 import numpy as np
 import pandas as pd
 import torch
+from captum.attr import IntegratedGradients
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -172,6 +174,58 @@ class TorchForecastModel(Model):
         metadata = temporal_metadata(frame)
         if metadata is not None:
             validate_timeline(metadata, self.interval_minutes)
+
+    def integrated_gradients(self, features, *, history=None, positions=None, sample_size=256, steps=128):
+        """Signed learned-target contributions in $/MWh, excluding reconstruction.
+
+        Uses a zero reference after fitted preprocessing. Sequence windows use
+        observed history up to each origin; sample only after building windows.
+        Per-lag values and completeness residuals are retained in DataFrame attrs.
+        """
+        if self.network is None or steps < 1 or features.empty or (sample_size is not None and sample_size < 1):
+            raise ValueError("A fitted model, nonempty inputs and positive integration settings are required")
+        inputs = self._inputs(features)
+        positions = np.arange(len(features)) if positions is None else np.asarray(positions, dtype=int)
+        if not len(positions) or (positions < 0).any() or (positions >= len(features)).any():
+            raise ValueError("Attribution positions must identify existing input rows")
+        if sample_size is not None and len(positions) > sample_size:
+            positions = np.sort(np.random.default_rng(self.random_seed).choice(positions, sample_size, replace=False))
+        if self.requires_sequence:
+            self._check_timeline(features)
+            count = self.sequence_length - 1
+            context = self.context_frame if history is None else history
+            if count:
+                validate_context(context.tail(count), features, self.interval_minutes)
+            prior = self.training_context if history is None else self._inputs(history.tail(count) if count else history.iloc[:0])
+            windows = ContextSequenceDataset(prior, inputs, self.sequence_length)
+            inputs = torch.stack([windows[int(i)][0] for i in positions])
+        else:
+            inputs = inputs[positions]
+        inputs = inputs.double()
+        network = copy.deepcopy(self.network).cpu().double().eval()
+        network.requires_grad_(False)
+        target = self.target_transformer
+
+        def output(x):
+            z = network(x).reshape(-1) * target.std_ + target.mean_
+            return target.scale * torch.sinh(z)
+
+        attribution, delta = IntegratedGradients(output).attribute(
+            inputs, baselines=0, n_steps=steps, method="gausslegendre",
+            internal_batch_size=len(inputs), return_convergence_delta=True,
+        )
+        values = attribution.detach().numpy()
+        totals = values.sum(axis=1) if self.requires_sequence else values
+        index = features.index.take(positions)
+        result = pd.DataFrame(totals, index=index, columns=self.feature_columns)
+        absolute = np.abs(values).sum(axis=1) if self.requires_sequence else np.abs(values)
+        result.attrs["absolute_contributions"] = pd.DataFrame(absolute, index=index, columns=self.feature_columns)
+        if self.requires_sequence:
+            columns = [f"lag_{lag}_{feature}" for lag in range(self.sequence_length - 1, -1, -1) for feature in self.feature_columns]
+            result.attrs["lag_attributions"] = pd.DataFrame(values.reshape(len(values), -1), index=index, columns=columns)
+        # Captum reports attribution sum minus output difference; retain our sign.
+        result.attrs["completeness_residual"] = -delta.detach().numpy()
+        return result
 
     def train(self, x_train, y_train):
         """Fit for max_epochs without validation, as used in the final refit."""
