@@ -50,7 +50,7 @@ class TorchForecastModel(Model):
     """
 
     sequence_length = 1
-    show_progress: bool = False
+    show_progress: bool = True
 
     def __init__(
         self,
