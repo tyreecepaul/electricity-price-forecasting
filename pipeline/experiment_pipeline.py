@@ -12,7 +12,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -30,7 +30,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.contracts import forecast_vector
-from pipeline.preprocessing import PreparedModelData, prepare_model_data
+from pipeline.preprocessing import (
+    PreparedModelData,
+    forecast_reliability_columns,
+    prepare_model_data,
+)
 from pipeline.preprocessing.config import FeatureConfig
 
 TargetType = Literal["change", "price", "aemo_error"]
@@ -74,6 +78,9 @@ class ExperimentConfig:
     walk_forward_folds: int = 1
     selection_metric: str = "mae"
     random_seed: int = 42
+    # Give models the forecast reliability features as extra inputs. Prepared
+    # data always contains them, so this switch never rebuilds the cache.
+    forecast_reliability: bool = False
 
     def __post_init__(self) -> None:
         if self.horizon_minutes <= 0:
@@ -216,6 +223,29 @@ def chronological_validation_split(
     return fit_df, validation_df
 
 
+def with_forecast_reliability(prepared: PreparedModelData) -> PreparedModelData:
+    """Append the forecast reliability features to the model inputs."""
+    extra = [
+        column
+        for column in forecast_reliability_columns(prepared.train_df)
+        if column not in prepared.features
+        and column in prepared.test_df.columns
+        and prepared.train_df[column].notna().any()
+    ]
+    if not extra:
+        raise ValueError(
+            "Prepared data has no forecast reliability features; they need "
+            "aligned AEMO P5MIN price forecasts"
+        )
+    features = [*prepared.features, *extra]
+    return replace(
+        prepared,
+        X_train=prepared.train_df[features].copy(),
+        X_test=prepared.test_df[features].copy(),
+        features=features,
+    )
+
+
 def prepare_experiment(
     config: ExperimentConfig,
     *,
@@ -223,6 +253,8 @@ def prepare_experiment(
 ) -> ExperimentData:
     """Load prepared data and construct the model-selection split."""
     prepared = load_prepared_data(config, force_refresh=force_refresh)
+    if config.forecast_reliability:
+        prepared = with_forecast_reliability(prepared)
     fit_df, validation_df = chronological_validation_split(
         prepared.train_df,
         config,
