@@ -9,7 +9,7 @@ from abc import abstractmethod
 import numpy as np
 import pandas as pd
 import torch
-from captum.attr import IntegratedGradients
+from captum.attr import GradientShap
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -175,15 +175,29 @@ class TorchForecastModel(Model):
         if metadata is not None:
             validate_timeline(metadata, self.interval_minutes)
 
-    def integrated_gradients(self, features, *, history=None, positions=None, sample_size=256, steps=128):
-        """Signed learned-target contributions in $/MWh, excluding reconstruction.
+    def gradient_shap(self, features, reference_features, *, history=None, positions=None,
+                      sample_size=1024, baseline_size=16, n_samples=128):
+        """Signed learned-target contributions relative to sampled training inputs.
 
-        Uses a zero reference after fitted preprocessing. Sequence windows use
-        observed history up to each origin; sample only after building windows.
-        Per-lag values and completeness residuals are retained in DataFrame attrs.
+        Uses complete observed windows for sequence references and no added noise.
+        The residual compares attribution sums with prediction minus the mean
+        reference prediction; Monte Carlo approximation need not sum exactly.
         """
-        if self.network is None or steps < 1 or features.empty or (sample_size is not None and sample_size < 1):
+        if self.network is None or n_samples < 1 or baseline_size < 1 or features.empty or (sample_size is not None and sample_size < 1):
             raise ValueError("A fitted model, nonempty inputs and positive integration settings are required")
+        length = self.sequence_length if self.requires_sequence else 1
+        if len(reference_features) < length:
+            raise ValueError("Training references must contain at least one complete input window")
+        rng = np.random.default_rng(self.random_seed)
+        candidates = np.arange(length - 1, len(reference_features))
+        reference_positions = rng.choice(candidates, min(baseline_size, len(candidates)), replace=False)
+        if self.requires_sequence:
+            self._check_timeline(reference_features)
+            reference_inputs = self._inputs(reference_features)
+            baselines = torch.stack([reference_inputs[i - length + 1:i + 1] for i in reference_positions])
+        else:
+            baselines = self._inputs(reference_features.iloc[reference_positions])
+        baselines = baselines.double()
         inputs = self._inputs(features)
         positions = np.arange(len(features)) if positions is None else np.asarray(positions, dtype=int)
         if not len(positions) or (positions < 0).any() or (positions >= len(features)).any():
@@ -210,11 +224,21 @@ class TorchForecastModel(Model):
             z = network(x).reshape(-1) * target.std_ + target.mean_
             return target.scale * torch.sinh(z)
 
-        attribution, delta = IntegratedGradients(output).attribute(
-            inputs, baselines=0, n_steps=steps, method="gausslegendre",
-            internal_batch_size=len(inputs), return_convergence_delta=True,
-        )
-        values = attribution.detach().numpy()
+        explainer = GradientShap(output)
+        contributions = []
+        # Captum samples with NumPy and Torch; make attribution repeatable without
+        # changing the random state used by the rest of the pipeline.
+        numpy_state = np.random.get_state()
+        try:
+            with torch.random.fork_rng(devices=[]):
+                np.random.seed(self.random_seed)
+                torch.random.default_generator.manual_seed(self.random_seed)
+                for batch in inputs.split(max(1, 32 // length)):
+                    attribution = explainer.attribute(batch, baselines=baselines, n_samples=n_samples, stdevs=0.0)
+                    contributions.append(attribution.detach().numpy())
+        finally:
+            np.random.set_state(numpy_state)
+        values = np.concatenate(contributions)
         totals = values.sum(axis=1) if self.requires_sequence else values
         index = features.index.take(positions)
         result = pd.DataFrame(totals, index=index, columns=self.feature_columns)
@@ -223,8 +247,12 @@ class TorchForecastModel(Model):
         if self.requires_sequence:
             columns = [f"lag_{lag}_{feature}" for lag in range(self.sequence_length - 1, -1, -1) for feature in self.feature_columns]
             result.attrs["lag_attributions"] = pd.DataFrame(values.reshape(len(values), -1), index=index, columns=columns)
-        # Captum reports attribution sum minus output difference; retain our sign.
-        result.attrs["completeness_residual"] = -delta.detach().numpy()
+        with torch.no_grad():
+            reference_prediction = output(baselines).mean().item()
+            difference = output(inputs).numpy() - reference_prediction
+        result.attrs["reference_prediction"] = reference_prediction
+        result.attrs["baseline_count"] = len(baselines)
+        result.attrs["completeness_residual"] = difference - totals.sum(axis=1)
         return result
 
     def train(self, x_train, y_train):

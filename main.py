@@ -267,34 +267,38 @@ def main(
                 result,
             )
         if isinstance(model, TorchForecastModel):
-            sample_size, steps = 256, 128
-            print(f"Integrated gradients: up to {sample_size} test observations, seed {model.random_seed}; "
-                  f"{steps} Gauss-Legendre points per observation.")
-            print(f"Reference: zero after fitted preprocessing. Explaining target '{config.target_type}' in $/MWh.")
+            sample_size, baseline_size, n_samples = 1024, 256, 2048
+            print(f"GradientShap: up to {sample_size} test observations, seed {model.random_seed}; "
+                  f"{n_samples} random reference/path draws per observation, no added noise.")
+            print(f"References: up to {baseline_size} sampled training inputs. Explaining target '{config.target_type}' in $/MWh.")
             frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
             inputs = indexed_features(frame, prepared.features)
             history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
             positions = inputs.index.get_indexer(indexed_features(prepared.test_df, prepared.features).index)
-            attribution = model.integrated_gradients(
-                inputs, history=history, positions=positions, sample_size=sample_size, steps=steps,
+            attribution = model.gradient_shap(
+                inputs, x_train, history=history, positions=positions,
+                sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
             )
+            print(f"Using {attribution.attrs['baseline_count']} training references; "
+                  f"mean reference prediction {attribution.attrs['reference_prediction']:.3f} $/MWh.")
             importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
                 "mean_absolute_contribution"
             )
             print(f"Explained {len(attribution)} observations. Top 10 features ($/MWh):")
             print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
             residual = np.abs(attribution.attrs["completeness_residual"])
-            print(f"Completeness residual: mean {residual.mean():.4f}, max {residual.max():.4f} $/MWh.")
+            print(f"Reference-mean residual (Monte Carlo approximation): mean absolute {residual.mean():.4f}, "
+                  f"max absolute {residual.max():.4f} $/MWh.")
             if model.requires_sequence:
                 print("Feature magnitudes sum across lookback steps; signed contributions retain direction.")
             if run_directory is not None:
                 path = run_directory / model_cli_name(model_factory)
                 attribution.assign(
                     completeness_residual=attribution.attrs["completeness_residual"],
-                ).to_csv(path / "integrated_gradients.csv")
+                ).to_csv(path / "gradient_shap.csv")
                 importance.to_csv(path / "feature_importance.csv", index_label="feature")
                 if model.requires_sequence:
-                    attribution.attrs["lag_attributions"].to_csv(path / "integrated_gradients_by_lag.csv")
+                    attribution.attrs["lag_attributions"].to_csv(path / "gradient_shap_by_lag.csv")
 
     print_evaluation_summary(results, prepared)
     if run_directory is not None:
