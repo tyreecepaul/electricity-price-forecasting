@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from electricity_price_forecasting_model.final_model.transformer import TransformerModel
 from electricity_price_forecasting_model.final_model.gru import GRUModel
@@ -196,6 +197,28 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(arguments)
 
 
+def sequence_attribution_summary(
+    lag_attributions: pd.DataFrame, interval_minutes: float,
+) -> pd.DataFrame:
+    """Summarise contributions by sequence position, not engineered feature lag."""
+    lags = sorted({int(column.split("_", 2)[1]) for column in lag_attributions.columns})
+    rows = []
+    for lag in lags:
+        values = lag_attributions.loc[:, lag_attributions.columns.str.startswith(f"lag_{lag}_")]
+        rows.append({
+            "sequence_lag": lag,
+            "minutes_before_prediction": lag * interval_minutes,
+            "mean_absolute_contribution": values.abs().sum(axis=1).mean(),
+            "mean_signed_contribution": values.sum(axis=1).mean(),
+        })
+    summary = pd.DataFrame(rows).set_index("sequence_lag")
+    total = summary["mean_absolute_contribution"].sum()
+    summary["absolute_share_percent"] = (
+        100 * summary["mean_absolute_contribution"] / total if total > 0 else 0.0
+    )
+    return summary
+
+
 def main(
     selected_models: Sequence[str] | None = None,
     *,
@@ -268,9 +291,8 @@ def main(
             )
         if isinstance(model, TorchForecastModel):
             sample_size, baseline_size, n_samples = 1024, 256, 2048
-            print(f"GradientShap: up to {sample_size} test observations, seed {model.random_seed}; "
-                  f"{n_samples} random reference/path draws per observation, no added noise.")
-            print(f"References: up to {baseline_size} sampled training inputs. Explaining target '{config.target_type}' in $/MWh.")
+            print(f"GradientShap: target={config.target_type}, samples<={sample_size}, "
+                  f"references<={baseline_size}, draws={n_samples}, seed={model.random_seed}")
             frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
             inputs = indexed_features(frame, prepared.features)
             history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
@@ -279,18 +301,23 @@ def main(
                 inputs, x_train, history=history, positions=positions,
                 sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
             )
-            print(f"Using {attribution.attrs['baseline_count']} training references; "
-                  f"mean reference prediction {attribution.attrs['reference_prediction']:.3f} $/MWh.")
+            print(f"Observations={len(attribution)}, references={attribution.attrs['baseline_count']}, "
+                  f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
             importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
                 "mean_absolute_contribution"
             )
-            print(f"Explained {len(attribution)} observations. Top 10 features ($/MWh):")
+            feature_scope = "all timesteps" if model.requires_sequence else "single input row"
+            print(f"Top 10 features ($/MWh; {feature_scope}):")
             print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
             residual = np.abs(attribution.attrs["completeness_residual"])
-            print(f"Reference-mean residual (Monte Carlo approximation): mean absolute {residual.mean():.4f}, "
-                  f"max absolute {residual.max():.4f} $/MWh.")
+            print(f"Attribution residual ($/MWh): mean absolute={residual.mean():.4f}, "
+                  f"max absolute={residual.max():.4f}")
             if model.requires_sequence:
-                print("Feature magnitudes sum across lookback steps; signed contributions retain direction.")
+                timestep_summary = sequence_attribution_summary(
+                    attribution.attrs["lag_attributions"], model.interval_minutes,
+                )
+                print("Timestep importance ($/MWh; all features; lag 0 = latest input):")
+                print(timestep_summary.to_string(float_format=lambda x: f"{x:.3f}"))
             if run_directory is not None:
                 path = run_directory / model_cli_name(model_factory)
                 attribution.assign(
@@ -299,6 +326,7 @@ def main(
                 importance.to_csv(path / "feature_importance.csv", index_label="feature")
                 if model.requires_sequence:
                     attribution.attrs["lag_attributions"].to_csv(path / "gradient_shap_by_lag.csv")
+                    timestep_summary.to_csv(path / "gradient_shap_timestep_summary.csv")
 
     print_evaluation_summary(results, prepared)
     if run_directory is not None:
