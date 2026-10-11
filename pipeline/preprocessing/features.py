@@ -290,6 +290,68 @@ def add_p5min_forecast_features(
     return out
 
 
+def add_forecast_reliability_features(df: pd.DataFrame, config: FeatureConfig) -> pd.DataFrame:
+    """Add the recent accuracy of AEMO's own P5MIN price forecast.
+
+    For each configured horizon, the forecast issued for the current interval is
+    compared with the price that was realised. Rolling windows summarise that
+    error (mean and mean absolute), and the longest window also counts the
+    forecasts at or above the spike level, the false alarms and the missed
+    spikes. A value at time t uses forecasts issued before t and prices up to t,
+    so it is known at prediction time. Horizons without an aligned forecast
+    column are skipped.
+    """
+    out = df.copy().sort_values(["region", "settlement_date"]).reset_index(drop=True)
+    level = config.reliability_spike_level
+    longest = max(config.reliability_windows, default=0)
+
+    def rolling(values: pd.Series, window: int, statistic: str) -> pd.Series:
+        return values.groupby(out["region"], sort=False).transform(
+            lambda s: getattr(s.rolling(window, min_periods=1), statistic)()
+        )
+
+    for minutes in config.reliability_horizons_minutes:
+        column = f"p5_h{minutes:02d}_rrp"
+        if column not in out.columns:
+            continue
+        # AEMO's forecast for this interval, issued `minutes` earlier. An exact
+        # timestamp join stops a missing interval from shifting the comparison.
+        key = pd.DataFrame(
+            {
+                "issued_at": out["settlement_date"] - pd.to_timedelta(minutes, unit="m"),
+                "region": out["region"],
+            }
+        )
+        lookup = out[["settlement_date", "region", column]].rename(
+            columns={"settlement_date": "issued_at", column: "issued"}
+        )
+        matched = key.merge(lookup, on=["issued_at", "region"], how="left")
+        issued = pd.Series(matched["issued"].to_numpy(), index=out.index)
+
+        error = out["rrp"] - issued
+        for window in config.reliability_windows:
+            stem = f"reliability_rrp_err{minutes:02d}"
+            out[f"{stem}_mean_{window}"] = rolling(error, window, "mean")
+            out[f"{stem}_abs_{window}"] = rolling(error.abs(), window, "mean")
+
+        warned = issued >= level
+        counts = {
+            "warnings": warned,
+            "false_alarms": warned & (out["rrp"] < level),
+            "missed": ~warned & issued.notna() & (out["rrp"] >= level),
+        }
+        for name, flags in counts.items():
+            out[f"reliability_{name}{minutes:02d}_{longest}"] = rolling(
+                flags.astype(float), longest, "sum"
+            )
+    return out
+
+
+def forecast_reliability_columns(df: pd.DataFrame) -> list[str]:
+    """Return the forecast reliability features present in ``df``."""
+    return [c for c in df.columns if c.startswith("reliability_")]
+
+
 def build_features(
     actuals: pd.DataFrame,
     *,
@@ -339,6 +401,7 @@ def build_features(
                 forecast_input = forecast_input.drop_duplicates(keys, keep="last")
 
     combined = add_p5min_forecast_features(combined, forecast_input, config)
+    combined = add_forecast_reliability_features(combined, config)
     if add_target_columns:
         combined = add_targets(combined, config)
 
@@ -350,7 +413,9 @@ def essential_feature_columns(df: pd.DataFrame, config: FeatureConfig | None = N
     """Return the deliberately constrained v1 feature set present in ``df``.
 
     New feature families can be appended elsewhere without silently changing the
-    baseline model. This makes ablation tests and comparisons reproducible.
+    baseline model. This makes ablation tests and comparisons reproducible. The
+    forecast reliability features are one such family: they are built for every
+    row but only become model inputs when an experiment asks for them.
     """
     config = config or FeatureConfig()
     wanted: list[str] = []
