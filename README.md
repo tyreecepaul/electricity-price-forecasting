@@ -149,10 +149,11 @@ use the median selected epoch across folds, even when `max_epochs` was omitted
 from the grid. Seeds come from `ExperimentConfig`/`--seed` unless a candidate
 explicitly sets its own `random_seed`.
 
-Runs save configuration, dependency versions, data provenance, trial/fold
+Runs print results without saving artifacts by default. Add `--save` to save
+configuration, dependency versions, data provenance, trial/fold
 scores, per-origin predictions, training history and fitted CPU model bundles
 (including scalers and history) under `reports/runs/<unique-run-id>/`.
-Use `--output-dir` to choose a location or `--no-save` to disable saving. Load
+Use `--save --output-dir` to choose a save location. Load
 your own model bundles with `joblib.load`; do not load untrusted joblib files.
 
 Prepared caches live under this repository's `model_cache`. Compatibility now

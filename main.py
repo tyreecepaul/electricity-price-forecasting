@@ -22,6 +22,8 @@ from pipeline.experiment_pipeline import (
 )
 from pipeline.model import Model
 from pipeline.model_data import final_training_data, predict_test
+from pipeline.contracts import indexed_features
+from pipeline.neural import TorchForecastModel
 from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
@@ -185,7 +187,7 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path(__file__).resolve().parent / "reports" / "runs",
     )
-    parser.add_argument("--no-save", action="store_true")
+    parser.add_argument("--save", action="store_true", help="Save models and result artifacts; disabled by default.")
     parser.add_argument(
         "--refresh",
         action="store_true",
@@ -199,7 +201,7 @@ def main(
     *,
     config=None,
     output_directory=None,
-    save_results=True,
+    save_results=False,
     force_refresh=False,
 ) -> None:
     """Prepare shared data, select/refit each model, then score the held-out test.
@@ -264,6 +266,35 @@ def main(
                 predicted_price,
                 result,
             )
+        if isinstance(model, TorchForecastModel):
+            sample_size, steps = 256, 128
+            print(f"Integrated gradients: up to {sample_size} test observations, seed {model.random_seed}; "
+                  f"{steps} Gauss-Legendre points per observation.")
+            print(f"Reference: zero after fitted preprocessing. Explaining target '{config.target_type}' in $/MWh.")
+            frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
+            inputs = indexed_features(frame, prepared.features)
+            history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
+            positions = inputs.index.get_indexer(indexed_features(prepared.test_df, prepared.features).index)
+            attribution = model.integrated_gradients(
+                inputs, history=history, positions=positions, sample_size=sample_size, steps=steps,
+            )
+            importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
+                "mean_absolute_contribution"
+            )
+            print(f"Explained {len(attribution)} observations. Top 10 features ($/MWh):")
+            print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
+            residual = np.abs(attribution.attrs["completeness_residual"])
+            print(f"Completeness residual: mean {residual.mean():.4f}, max {residual.max():.4f} $/MWh.")
+            if model.requires_sequence:
+                print("Feature magnitudes sum across lookback steps; signed contributions retain direction.")
+            if run_directory is not None:
+                path = run_directory / model_cli_name(model_factory)
+                attribution.assign(
+                    completeness_residual=attribution.attrs["completeness_residual"],
+                ).to_csv(path / "integrated_gradients.csv")
+                importance.to_csv(path / "feature_importance.csv", index_label="feature")
+                if model.requires_sequence:
+                    attribution.attrs["lag_attributions"].to_csv(path / "integrated_gradients_by_lag.csv")
 
     print_evaluation_summary(results, prepared)
     if run_directory is not None:
@@ -282,6 +313,6 @@ if __name__ == "__main__":
             random_seed=cli_args.seed,
         ),
         output_directory=cli_args.output_dir,
-        save_results=not cli_args.no_save,
+        save_results=cli_args.save,
         force_refresh=cli_args.refresh,
     )
