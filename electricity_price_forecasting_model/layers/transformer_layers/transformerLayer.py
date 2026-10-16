@@ -1,5 +1,5 @@
-from random import random
-
+import math
+import torch
 import torch.nn as nn
 
 class MaskAttention(nn.Module):
@@ -58,7 +58,40 @@ class DecoderTransformer(nn.Module):
         ])
         self.norm = nn.LayerNorm(d_model)
 
+    '''
+    Positional encoding according to the original transformer paper.
+    '''
+    def positional_encoding(self, x):
+        seq_len = x.size(1)
+        d_model = x.size(2)
+
+        positions = torch.arange(seq_len, device=x.device, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, device=x.device, dtype=torch.float32)
+            * (-math.log(10000.0) / d_model)
+        )
+        encoding = torch.zeros(seq_len, d_model, device=x.device, dtype=torch.float32)
+        encoding[:, 0::2] = torch.sin(positions * div_term)
+        encoding[:, 1::2] = torch.cos(positions * div_term[:encoding[:, 1::2].size(1)])
+
+        return encoding.to(dtype=x.dtype).unsqueeze(0)
+
     def forward(self, x, mask=None):
+        seq_len = x.size(1)
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        if mask is None:
+            mask = causal_mask
+        elif mask.dtype == torch.bool:
+            mask = mask | causal_mask
+        elif torch.is_floating_point(mask):
+            mask = mask.masked_fill(causal_mask, float("-inf"))
+        else:
+            raise TypeError("Attention mask must have boolean or floating-point dtype")
+
+        x = x + self.positional_encoding(x)
         for layer in self.layers:
             x = layer(x, mask)
         # add any embeddings here e.g. from other data source (like spatio)
