@@ -89,15 +89,15 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "num_layers": [3, 6],
             "dim_feedforward": [64, 128],
             "dropout": [0.0, 0.1],
-            "learning_rate": [0.001],
+            "learning_rate": [0.001], #test weight decay next
             "weight_decay": [0.0001],
             "batch_size": [64, 128],
             "prediction_batch_size": [256],
             "max_epochs": [50],
             "patience": [5],
             "min_delta": [0.001],
-            "loss": ["mse", "huber"],
-            "huber_delta": [0.5, 1.0],
+            "loss": ["huber"],
+            "huber_delta": [0.5],
         },
     ),
     (
