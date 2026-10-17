@@ -11,6 +11,7 @@ from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.final_model.tcn import TCNModel
+from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
@@ -45,6 +46,21 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "learning_rate": [0.1],
             "min_child_weight": [4],
             "max_estimators": [1000],
+        },
+    ),
+    (
+        ARIMAModel,
+        {
+            # ARIMA forecasts prices itself, so it must know the experiment's target.
+            "horizon_minutes": [EXPERIMENT.horizon_minutes],
+            "target_type": [EXPERIMENT.target_type],
+            # Chosen on validation MAE for VIC1 at 30 minutes (test MAE 13.40).
+            "p": [2],
+            "d": [1],
+            "q": [0],
+            "transform": ["asinh_mad"],
+            "daily_harmonics": [0],
+            "fit_window_days": [7],
         },
     ),
     (

@@ -58,6 +58,17 @@ def test_cli_selects_lstm():
     assert [factory.model_name for factory, _ in selected] == ["LSTM"]
 
 
+def test_cli_selects_arima_with_the_experiment_horizon_and_target():
+    module = load_main_module()
+
+    selected = module.select_model_registry(["arima"])
+
+    assert [factory.model_name for factory, _ in selected] == ["ARIMA"]
+    grid = selected[0][1]
+    assert grid["horizon_minutes"] == [module.EXPERIMENT.horizon_minutes]
+    assert grid["target_type"] == [module.EXPERIMENT.target_type]
+
+
 def test_cli_selects_tcn_with_the_initial_comparison_window():
     module = load_main_module()
 
