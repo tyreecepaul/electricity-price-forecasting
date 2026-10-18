@@ -30,13 +30,30 @@ class FeatureConfig:
     include_calendar: bool = True
     include_interconnector_utilisation: bool = True
 
+    # Forecast reliability: how accurate AEMO's own P5MIN price forecast has been
+    # recently. These are the forecast horizons that are scored, the windows the
+    # errors are averaged over, and the price that counts as a spike.
+    reliability_horizons_minutes: tuple[int, ...] = (5, 30)
+    reliability_windows: tuple[int, ...] = (12, 72, 288)
+    reliability_spike_level: float = 300.0
+
     # Optional clipping is deliberately disabled by default. Extreme prices are
     # important observations in the NEM and should not be silently removed.
     clip_infinite_ratios: bool = True
 
     @property
     def max_history_intervals(self) -> int:
-        values = [1, *self.price_lags, *self.demand_lags, *self.rolling_windows]
+        # A reliability window also needs the forecasts issued one horizon earlier.
+        reliability = max(self.reliability_windows, default=0) + (
+            max(self.reliability_horizons_minutes, default=0) // self.interval_minutes
+        )
+        values = [
+            1,
+            *self.price_lags,
+            *self.demand_lags,
+            *self.rolling_windows,
+            reliability,
+        ]
         return max(values)
 
     @property

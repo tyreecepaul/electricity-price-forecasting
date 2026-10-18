@@ -149,11 +149,19 @@ use the median selected epoch across folds, even when `max_epochs` was omitted
 from the grid. Seeds come from `ExperimentConfig`/`--seed` unless a candidate
 explicitly sets its own `random_seed`.
 
-Runs save configuration, dependency versions, data provenance, trial/fold
+Runs print results without saving artifacts by default. Add `--save` to save
+configuration, dependency versions, data provenance, trial/fold
 scores, per-origin predictions, training history and fitted CPU model bundles
 (including scalers and history) under `reports/runs/<unique-run-id>/`.
-Use `--output-dir` to choose a location or `--no-save` to disable saving. Load
+Use `--save --output-dir` to choose a save location. Load
 your own model bundles with `joblib.load`; do not load untrusted joblib files.
+
+Neural runs also print Captum GradientShap feature rankings for up to 1,024 test
+observations, using 256 sampled training references and 2,048 random draws per
+observation. Sequence references are complete historical windows. Contributions
+explain the learned target in $/MWh relative to the reference predictions; the
+printed residual reflects Monte Carlo approximation. `--save` writes
+`gradient_shap.csv`, `feature_importance.csv` and sequence lag contributions.
 
 Prepared caches live under this repository's `model_cache`. Compatibility now
 includes the feature configuration, preparation code and local raw-cache file
