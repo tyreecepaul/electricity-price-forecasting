@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.util
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -217,6 +218,10 @@ def test_cache_metadata_tracks_feature_config_and_source(experiment, monkeypatch
     assert not _cache_payload_is_valid(payload, changed)
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source-b")
     assert not _cache_payload_is_valid(payload, config)
+    # Encoder code only identifies caches of experiments that use the encoder.
+    monkeypatch.setattr(module, "source_fingerprint", lambda: "source-a")
+    monkeypatch.setattr(module, "graph_source_fingerprint", lambda: "graph-b")
+    assert _cache_payload_is_valid(payload, config)
     assert PROJECT_ROOT == Path(__file__).resolve().parents[1]
 
 
@@ -311,6 +316,8 @@ def test_saved_run_round_trips_model_and_context(
         "model.joblib",
     ):
         assert (model_directory / filename).exists()
+    metadata = json.loads((model_directory / "model.json").read_text())
+    assert metadata["graph_embedding"] is None
     saved = pd.read_csv(model_directory / "predictions.csv")
     model = joblib.load(model_directory / "model.joblib")
     prediction = reconstruct_price_forecast(

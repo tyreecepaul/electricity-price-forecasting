@@ -101,6 +101,140 @@ def test_cli_parses_multiple_models():
     assert args.models == ["mlp", "gru", "xgboost"]
 
 
+def test_cli_graph_embedding_choices():
+    module = load_main_module()
+
+    assert module.parse_args([]).graph_embedding == "per-model"
+    assert module.parse_args(["--graph-embedding"]).graph_embedding == "nem"
+    assert module.parse_args(["--graph-embedding", "none"]).graph_embedding == "none"
+    assert module.parse_args(["--graph-embedding", "--models", "lstm"]).models == ["lstm"]
+    assert module.EXPERIMENT.graph_embedding is None
+    assert module.GRAPH_EMBEDDING_CHOICES["none"] is None
+    assert module.GRAPH_EMBEDDING_CHOICES["nem"].adjacency_mode == "nem"
+    assert module.GRAPH_EMBEDDING_CHOICES["identity"].adjacency_mode == "identity"
+
+
+def test_each_model_is_assigned_its_graph_embedding():
+    module = load_main_module()
+    assigned = {
+        factory.model_name: embedding
+        for factory, embedding in module.MODEL_GRAPH_EMBEDDING.items()
+    }
+
+    assert assigned["XGBoost"].adjacency_mode == "identity"
+    assert assigned["LSTM"].adjacency_mode == "nem"
+    assert assigned["LateFusion"].adjacency_mode == "nem"
+    assert "GRU" not in assigned
+
+
+def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
+    """Run ``main`` with stub models and report what each one was given."""
+
+    def fake_model(name):
+        class Fake:
+            model_name = name
+
+            def __init__(self, depth):
+                self.depth = depth
+
+            def get_model_name(self):
+                return name
+
+        return Fake
+
+    first, second, third = (fake_model(name) for name in ("First", "Second", "Third"))
+    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
+    prepared_configs, searches = [], []
+
+    def fake_prepare(config):
+        prepared_configs.append(config.graph_embedding)
+        rows = (test_rows or {}).get(config.graph_embedding, 2)
+        test_df = pd.DataFrame(
+            {
+                "settlement_date": pd.date_range("2025-01-01", periods=rows, freq="5min"),
+                "target_rrp": 1.0,
+            }
+        )
+        return SimpleNamespace(prepared="prepared", test_df=test_df, config=config)
+
+    def fake_search(factory, grid, experiment):
+        searches.append((factory.model_name, experiment.config.graph_embedding, grid))
+        return SimpleNamespace(best_config={"depth": 1})
+
+    registry = [(first, {"depth": [1]}), (second, {"depth": [1]}), (third, {"depth": [1]})]
+    monkeypatch.setattr(module, "MODEL_REGISTRY", registry)
+    monkeypatch.setattr(module, "MODEL_GRAPH_EMBEDDING", {first: nem, third: nem})
+    monkeypatch.setattr(module, "SWEEP_GRIDS", {second: {"depth": [1, 2]}})
+    monkeypatch.setattr(module, "prepare_experiment", fake_prepare)
+    monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
+    monkeypatch.setattr(module, "search_hyperparameters", fake_search)
+    monkeypatch.setattr(module, "final_training_data", lambda model, prepared: (None, None))
+    monkeypatch.setattr(first, "train", lambda self, x, y: None, raising=False)
+    monkeypatch.setattr(second, "train", lambda self, x, y: None, raising=False)
+    monkeypatch.setattr(third, "train", lambda self, x, y: None, raising=False)
+    monkeypatch.setattr(module, "predict_test", lambda model, prepared: np.zeros(2))
+    monkeypatch.setattr(module, "reconstruct_price_forecast", lambda frame, y, config: y)
+    monkeypatch.setattr(
+        module, "evaluate", lambda model, actual, predicted: model.get_model_name()
+    )
+    monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
+
+    module.main(save_results=False, **arguments)
+    return nem, prepared_configs, searches
+
+
+def test_models_sharing_an_embedding_share_one_prepared_experiment(monkeypatch):
+    module = load_main_module()
+
+    nem, prepared, searches = run_fake_models(module, monkeypatch)
+
+    assert prepared == [nem, None]
+    assert [(name, embedding) for name, embedding, _ in searches] == [
+        ("First", nem),
+        ("Third", nem),
+        ("Second", None),
+    ]
+
+
+def test_explicit_embedding_overrides_the_per_model_map(monkeypatch):
+    module = load_main_module()
+
+    _, prepared, searches = run_fake_models(module, monkeypatch, graph_embeddings={})
+
+    assert prepared == [None]
+    assert [name for name, _, _ in searches] == ["First", "Second", "Third"]
+
+
+def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
+    module = load_main_module()
+
+    _, _, searches = run_fake_models(module, monkeypatch, sweep=True)
+    grids = {name: grid for name, _, grid in searches}
+
+    assert grids == {
+        "First": {"depth": [1]},
+        "Second": {"depth": [1, 2]},
+        "Third": {"depth": [1]},
+    }
+    lstm = next(f for f, _ in load_main_module().MODEL_REGISTRY if f.model_name == "LSTM")
+    registry_grid = next(g for f, g in load_main_module().MODEL_REGISTRY if f is lstm)
+    sweep_grid = next(
+        g for f, g in load_main_module().SWEEP_GRIDS.items() if f.model_name == "LSTM"
+    )
+    assert set(sweep_grid) >= set(registry_grid)
+    assert len(sweep_grid["sequence_length"]) > 1 and len(sweep_grid["hidden_size"]) > 1
+
+
+def test_embedding_variants_must_score_the_same_test_rows(monkeypatch):
+    import pytest
+
+    module = load_main_module()
+    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
+
+    with pytest.raises(RuntimeError, match="different test rows"):
+        run_fake_models(module, monkeypatch, test_rows={nem: 2, None: 3})
+
+
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):
     module = load_main_module()
 

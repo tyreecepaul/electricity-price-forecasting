@@ -10,6 +10,7 @@ from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.final_model.tcn import TCNModel
+from electricity_price_forecasting_model.final_model.late_fusion import LateFusionModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
@@ -135,7 +136,30 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "huber_delta": [1.0],
             "device": [None],
         },    
-    )
+    ),
+    (
+        LateFusionModel,
+        {
+            "sequence_length": [24],
+            "channels": [32],
+            "kernel_size": [3],
+            "num_blocks": [3],
+            "d_model": [32],
+            "nhead": [4],
+            "num_decoder_layers": [1],
+            "dim_feedforward": [64],
+            "dropout": [0.1],
+            "learning_rate": [0.001],
+            "weight_decay": [0.0001],
+            "batch_size": [256],
+            "prediction_batch_size": [1024],
+            "max_epochs": [20],
+            "patience": [3],
+            "min_delta": [0.001],
+            "loss": ["huber"],
+            "huber_delta": [1.0],
+        },
+    ),
 ]
 
 # Graph-embedding features each model trains on. Unlisted models use
@@ -144,6 +168,8 @@ MODEL_GRAPH_EMBEDDING: dict[type[Model], GraphEmbeddingConfig | None] = {
     # Same encoder without cross-region edges.
     XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),
     LSTMModel: GraphEmbeddingConfig(),
+    # The spatial branch reads gnn_emb_* columns; without them it is skipped.
+    LateFusionModel: GraphEmbeddingConfig(),
 }
 GRAPH_EMBEDDING_CHOICES: dict[str, GraphEmbeddingConfig | None] = {
     "none": None,
@@ -162,6 +188,27 @@ SWEEP_GRIDS: dict[type[Model], dict[str, Sequence]] = {
         "weight_decay": [0.0001],
         "batch_size": [512],
         "prediction_batch_size": [2048],
+        "max_epochs": [20],
+        "patience": [3],
+        "min_delta": [0.001],
+        "loss": ["huber"],
+        "huber_delta": [1.0],
+    },
+    # The registry grid selects epoch 1, so search gentler optimisation first.
+    LateFusionModel: {
+        "sequence_length": [12, 24],
+        "channels": [32],
+        "kernel_size": [3],
+        "num_blocks": [3],
+        "d_model": [32],
+        "nhead": [4],
+        "num_decoder_layers": [1],
+        "dim_feedforward": [64],
+        "dropout": [0.1, 0.2],
+        "learning_rate": [0.001, 0.0003, 0.0001],
+        "weight_decay": [0.0001],
+        "batch_size": [256],
+        "prediction_batch_size": [1024],
         "max_epochs": [20],
         "patience": [3],
         "min_delta": [0.001],
