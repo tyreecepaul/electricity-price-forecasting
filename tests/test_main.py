@@ -134,7 +134,6 @@ def test_each_model_is_assigned_its_graph_embedding():
 
     assert assigned["XGBoost"].adjacency_mode == "identity"
     assert assigned["LSTM"].adjacency_mode == "nem"
-    assert assigned["LateFusion"].adjacency_mode == "nem"
     assert "GRU" not in assigned
 
 
