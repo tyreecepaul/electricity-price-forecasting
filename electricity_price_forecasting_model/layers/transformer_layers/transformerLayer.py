@@ -49,6 +49,60 @@ class DecoderBlock(nn.Module):
         x = self.feed_forward_norm(x + self.dropout(feed_forward_out))
         return x
 
+class CrossAttentionDecoderBlock(nn.Module):
+    """Transformer decoder block that attends to separate encoder memory.
+
+    ``target`` and ``memory`` use batch-first shapes:
+    ``(batch, target_length, d_model)`` and
+    ``(batch, memory_length, d_model)``.
+    """
+
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.0):
+        super(CrossAttentionDecoderBlock, self).__init__()
+        self.self_attn = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
+        self.cross_attn = nn.MultiheadAttention(
+            d_model, nhead, dropout=dropout, batch_first=True
+        )
+        self.feed_forward = FeedForward(d_model, dim_feedforward, dropout)
+        self.self_attention_norm = nn.LayerNorm(d_model)
+        self.cross_attention_norm = nn.LayerNorm(d_model)
+        self.feed_forward_norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        target,
+        memory,
+        target_mask=None,
+        memory_mask=None,
+        target_key_padding_mask=None,
+        memory_key_padding_mask=None,
+    ):
+        self_attn_output, _ = self.self_attn(
+            target,
+            target,
+            target,
+            attn_mask=target_mask,
+            key_padding_mask=target_key_padding_mask,
+            need_weights=False,
+        )
+        target = self.self_attention_norm(target + self.dropout(self_attn_output))
+
+        cross_attn_output, _ = self.cross_attn(
+            target,
+            memory,
+            memory,
+            attn_mask=memory_mask,
+            key_padding_mask=memory_key_padding_mask,
+            need_weights=False,
+        )
+        target = self.cross_attention_norm(target + self.dropout(cross_attn_output))
+
+        feed_forward_output = self.feed_forward(target)
+        return self.feed_forward_norm(target + self.dropout(feed_forward_output))
+
 class DecoderTransformer(nn.Module):
     def __init__(self, d_model, nhead, num_layers, dim_feedforward=2048, dropout=0.0):
         super(DecoderTransformer, self).__init__()
@@ -94,5 +148,4 @@ class DecoderTransformer(nn.Module):
         x = x + self.positional_encoding(x)
         for layer in self.layers:
             x = layer(x, mask)
-        # add any embeddings here e.g. from other data source (like spatio)
-        return self.norm(x) # should I just do softmax here?
+        return self.norm(x)

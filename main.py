@@ -83,18 +83,18 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         TransformerModel,
         {
-            "sequence_length": [36, 72],
-            "d_model": [32, 64],
-            "nhead": [4, 8],
-            "num_layers": [3, 6],
-            "dim_feedforward": [64, 128],
-            "dropout": [0.0, 0.1],
+            "sequence_length": [72], #72
+            "d_model": [64],# 32
+            "nhead": [4], #8
+            "num_layers": [3], #6
+            "dim_feedforward": [128],#64
+            "dropout": [0.0], #0.1
             "learning_rate": [0.001], #test weight decay next
             "weight_decay": [0.0001],
-            "batch_size": [64, 128],
+            "batch_size": [128], #64
             "prediction_batch_size": [256],
             "max_epochs": [50],
-            "patience": [5],
+            "patience": [10],
             "min_delta": [0.001],
             "loss": ["huber"],
             "huber_delta": [0.5],
