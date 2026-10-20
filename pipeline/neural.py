@@ -176,10 +176,13 @@ class TorchForecastModel(Model):
             validate_timeline(metadata, self.interval_minutes)
 
     def gradient_shap(self, features, reference_features, *, history=None, positions=None,
-                      sample_size=1024, baseline_size=16, n_samples=128):
+                      sample_size=1024, baseline_size=16, n_samples=128, device=None):
         """Signed learned-target contributions relative to sampled training inputs.
 
         Uses complete observed windows for sequence references and no added noise.
+        Defaults to the model's GPU, then available CUDA/XPU, then CPU. Pass
+        device="cpu" to force CPU attribution. GPUs use float32 and chunked
+        draws; CPU retains float64. The fitted network is never modified.
         The residual compares attribution sums with prediction minus the mean
         reference prediction; Monte Carlo approximation need not sum exactly.
         """
@@ -197,7 +200,6 @@ class TorchForecastModel(Model):
             baselines = torch.stack([reference_inputs[i - length + 1:i + 1] for i in reference_positions])
         else:
             baselines = self._inputs(reference_features.iloc[reference_positions])
-        baselines = baselines.double()
         inputs = self._inputs(features)
         positions = np.arange(len(features)) if positions is None else np.asarray(positions, dtype=int)
         if not len(positions) or (positions < 0).any() or (positions >= len(features)).any():
@@ -215,9 +217,30 @@ class TorchForecastModel(Model):
             inputs = torch.stack([windows[int(i)][0] for i in positions])
         else:
             inputs = inputs[positions]
-        inputs = inputs.double()
-        network = copy.deepcopy(self.network).cpu().double().eval()
+        if device is None:
+            if self.device.type in {"cuda", "xpu"}:
+                device = self.device
+            elif torch.cuda.is_available():
+                device = "cuda"
+            elif hasattr(torch, "xpu") and torch.xpu.is_available():
+                device = "xpu"
+            else:
+                device = "cpu"
+        device = torch.device(device)
+        if device.type not in {"cpu", "cuda", "xpu"}:
+            raise ValueError("GradientShap device must be cpu, cuda, or xpu")
+        dtype = torch.float64 if device.type == "cpu" else torch.float32
+        inputs = inputs.to(device=device, dtype=dtype)
+        baselines = baselines.to(device=device, dtype=dtype)
+        network = copy.deepcopy(self.network).to(device=device, dtype=dtype).eval()
         network.requires_grad_(False)
+        batch_size = max(1, 32 // length)
+        draw_batch_size = n_samples if device.type == "cpu" else min(n_samples, 128)
+        backend = getattr(torch, device.type) if device.type != "cpu" else None
+        gpu_devices = (
+            [device.index if device.index is not None else backend.current_device()]
+            if backend is not None else []
+        )
         target = self.target_transformer
 
         def output(x):
@@ -230,12 +253,27 @@ class TorchForecastModel(Model):
         # changing the random state used by the rest of the pipeline.
         numpy_state = np.random.get_state()
         try:
-            with torch.random.fork_rng(devices=[]):
+            with ExitStack() as stack:
+                stack.enter_context(torch.random.fork_rng(
+                    devices=gpu_devices,
+                    device_type=device.type if backend is not None else "cuda",
+                ))
+                if backend is not None:
+                    stack.enter_context(backend.device(device))
+                    backend.manual_seed(self.random_seed)
+                if device.type == "cuda" and any(isinstance(layer, nn.RNNBase) for layer in network.modules()):
+                    # Native CUDA RNNs support backward in eval mode; cuDNN RNNs do not.
+                    stack.enter_context(torch.backends.cudnn.flags(enabled=False))
                 np.random.seed(self.random_seed)
                 torch.random.default_generator.manual_seed(self.random_seed)
-                for batch in inputs.split(max(1, 32 // length)):
-                    attribution = explainer.attribute(batch, baselines=baselines, n_samples=n_samples, stdevs=0.0)
-                    contributions.append(attribution.detach().numpy())
+                for batch in inputs.split(batch_size):
+                    attribution = torch.zeros_like(batch)
+                    # Weight the final partial chunk so every requested draw counts equally.
+                    for start in range(0, n_samples, draw_batch_size):
+                        draws = min(draw_batch_size, n_samples - start)
+                        chunk = explainer.attribute(batch, baselines=baselines, n_samples=draws, stdevs=0.0)
+                        attribution.add_(chunk.detach(), alpha=draws / n_samples)
+                    contributions.append(attribution.cpu().numpy())
         finally:
             np.random.set_state(numpy_state)
         values = np.concatenate(contributions)
@@ -248,8 +286,9 @@ class TorchForecastModel(Model):
             columns = [f"lag_{lag}_{feature}" for lag in range(self.sequence_length - 1, -1, -1) for feature in self.feature_columns]
             result.attrs["lag_attributions"] = pd.DataFrame(values.reshape(len(values), -1), index=index, columns=columns)
         with torch.no_grad():
-            reference_prediction = output(baselines).mean().item()
-            difference = output(inputs).numpy() - reference_prediction
+            reference_prediction = torch.cat([output(batch).cpu() for batch in baselines.split(batch_size)]).mean().item()
+            difference = torch.cat([output(batch).cpu() for batch in inputs.split(batch_size)]).numpy() - reference_prediction
+        result.attrs["device"] = str(inputs.device)
         result.attrs["reference_prediction"] = reference_prediction
         result.attrs["baseline_count"] = len(baselines)
         result.attrs["completeness_residual"] = difference - totals.sum(axis=1)

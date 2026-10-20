@@ -318,7 +318,8 @@ def main(
                 inputs, x_train, history=history, positions=positions,
                 sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
             )
-            print(f"Observations={len(attribution)}, references={attribution.attrs['baseline_count']}, "
+            print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
+                  f"references={attribution.attrs['baseline_count']}, "
                   f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
             importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
                 "mean_absolute_contribution"
