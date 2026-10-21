@@ -30,17 +30,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.contracts import forecast_array, target_columns
+from pipeline.graph_embedding import GraphEmbeddingConfig
 from pipeline.preprocessing import (
     PreparedModelData,
     forecast_reliability_columns,
     prepare_model_data,
     add_targets,
 )
+from pipeline.preprocessing.adapters import LearnedFeatures
 from pipeline.preprocessing.config import FeatureConfig
 
 TargetType = Literal["change", "price", "aemo_error"]
 FeatureSelection = Literal["all"] | Sequence[str]
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 HOUR_HORIZONS = tuple(range(5, 61, 5))
 
 
@@ -51,7 +53,8 @@ def source_fingerprint() -> str:
     Upstream revisions not downloaded locally still require force_refresh.
     """
     digest = hashlib.sha256()
-    for source in sorted((PROJECT_ROOT / "pipeline" / "preprocessing").glob("*.py")):
+    sources = sorted((PROJECT_ROOT / "pipeline" / "preprocessing").glob("*.py"))
+    for source in sources:
         digest.update(source.name.encode())
         digest.update(source.read_bytes())
     ingestion = PROJECT_ROOT / "pipeline" / "data_cleaning" / "data.py"
@@ -63,6 +66,21 @@ def source_fingerprint() -> str:
                 digest.update(
                     f"{path.relative_to(PROJECT_ROOT)}:{stat.st_size}:{stat.st_mtime_ns}".encode()
                 )
+    return digest.hexdigest()
+
+
+def graph_source_fingerprint() -> str:
+    """Fingerprint the graph-encoder code, used only when the stage is enabled.
+
+    Kept apart from ``source_fingerprint`` so editing the encoder does not
+    invalidate prepared data for experiments that never use it.
+    """
+    digest = hashlib.sha256()
+    layers = PROJECT_ROOT / "electricity_price_forecasting_model" / "layers" / "gnn_layers"
+    for directory in (PROJECT_ROOT / "pipeline" / "graph_embedding", layers):
+        for source in sorted(directory.glob("*.py")):
+            digest.update(source.name.encode())
+            digest.update(source.read_bytes())
     return digest.hexdigest()
 
 
@@ -80,10 +98,10 @@ class ExperimentConfig:
     walk_forward_folds: int = 1
     selection_metric: str = "mae"
     random_seed: int = 42
-    # Give models the forecast reliability features as extra inputs. Prepared
-    # data always contains them, so this switch never rebuilds the cache.
+    # Reliability features are appended after loading the shared prepared cache.
     forecast_reliability: bool = False
     forecast_mode: Literal["single", "multioutput"] = "single"
+    graph_embedding: GraphEmbeddingConfig | None = None
 
     def __post_init__(self) -> None:
         if self.horizon_minutes <= 0:
@@ -133,11 +151,30 @@ class ExperimentConfig:
         return hashlib.sha256(serialised.encode("utf-8")).hexdigest()[:10]
 
     @property
+    def graph_embedding_cache_key(self) -> str:
+        """Empty without the stage, so plain experiments keep their filenames."""
+        if self.graph_embedding is None:
+            return ""
+        serialised = json.dumps(asdict(self.graph_embedding), sort_keys=True)
+        return hashlib.sha256(serialised.encode("utf-8")).hexdigest()[:10]
+
+    @property
     def cache_file(self) -> Path:
+        embedding = self.graph_embedding_cache_key
         filename = (
             f"prepared_{self.region}_{self.horizon_minutes}min_"
             f"{self.target_type}_{self.feature_cache_key}_"
+            f"{f'gnn{embedding}_' if embedding else ''}"
             f"v{CACHE_SCHEMA_VERSION}.joblib"
+        )
+        return self.cache_directory / filename
+
+    @property
+    def graph_embedding_cache_file(self) -> Path:
+        """Encoder output is independent of ``region`` and shared across them."""
+        filename = (
+            f"graph_embedding_{self.horizon_minutes}min_{self.target_type}_"
+            f"{self.graph_embedding_cache_key}_v{CACHE_SCHEMA_VERSION}.joblib"
         )
         return self.cache_directory / filename
 
@@ -147,7 +184,7 @@ class ExperimentConfig:
             features = "all"
         else:
             features = list(self.model_features)
-        return {
+        metadata: dict[str, object] = {
             "schema_version": CACHE_SCHEMA_VERSION,
             "region": self.region,
             "horizon_minutes": self.horizon_minutes,
@@ -156,6 +193,15 @@ class ExperimentConfig:
             "feature_config": asdict(self.feature_config),
             "source_fingerprint": source_fingerprint(),
         }
+        if self.graph_embedding is not None:
+            metadata["graph_embedding"] = asdict(self.graph_embedding)
+            metadata["graph_source_fingerprint"] = graph_source_fingerprint()
+        return metadata
+
+    def graph_embedding_cache_metadata(self) -> dict[str, object]:
+        metadata = self.cache_metadata()
+        del metadata["region"], metadata["model_features"]
+        return metadata
 
 
 @dataclass(frozen=True)
@@ -184,6 +230,45 @@ def _cache_payload_is_valid(
     )
 
 
+def graph_embedding_stage(config: ExperimentConfig, *, force_refresh: bool = False):
+    """Return the learned-feature stage for ``prepare_model_data``, or None.
+
+    The encoder is fitted once per horizon/target and cached, so experiments
+    on different regions reuse the same embeddings.
+    """
+    if config.graph_embedding is None:
+        return None
+
+    def stage(train_features: pd.DataFrame, test_features: pd.DataFrame):
+        path = config.graph_embedding_cache_file
+        metadata = config.graph_embedding_cache_metadata()
+        if path.exists() and not force_refresh:
+            payload = joblib.load(path)
+            if (
+                isinstance(payload, dict)
+                and payload.get("metadata") == metadata
+                and isinstance(payload.get("data"), LearnedFeatures)
+            ):
+                print(f"Loading graph embeddings from {path.name}...")
+                return payload["data"]
+        print("Fitting graph encoder...")
+        # Imported here so experiments without the stage never load the encoder.
+        from pipeline.graph_embedding.embedder import compute_graph_embeddings
+
+        learned = compute_graph_embeddings(
+            train_features,
+            test_features,
+            config=config.graph_embedding,
+            horizon=config.horizon_minutes,
+            target=config.target_type,
+            interval_minutes=config.feature_config.interval_minutes,
+        )
+        joblib.dump({"metadata": metadata, "data": learned}, path)
+        return learned
+
+    return stage
+
+
 def load_prepared_data(
     config: ExperimentConfig,
     *,
@@ -207,6 +292,7 @@ def load_prepared_data(
         features=config.model_features,
         target=config.target_type,
         config=config.feature_config,
+        learned_features=graph_embedding_stage(config, force_refresh=force_refresh),
     )
     payload = {
         "metadata": config.cache_metadata(),
@@ -289,13 +375,38 @@ def prepare_experiment(
         prepared.train_df,
         config,
     )
-    return ExperimentData(
+    experiment = ExperimentData(
         config=config,
         prepared=prepared,
         fit_df=fit_df,
         validation_df=validation_df,
         test_df=prepared.test_df,
     )
+    check_embedding_precedes_validation(experiment)
+    return experiment
+
+
+def check_embedding_precedes_validation(experiment: ExperimentData) -> None:
+    """Reject splits whose validation periods the graph encoder learned from.
+
+    Validating a downstream model on labels the encoder was fitted to would
+    make every candidate using the embedding look better than it is.
+    """
+    fit_end = getattr(experiment.prepared, "embedding_fit_end", None)
+    if fit_end is None:
+        return
+    earliest = min(
+        validation["settlement_date"].min()
+        for _, validation in walk_forward_splits(experiment)
+    )
+    # fit_end bounds realised outcomes used for both fitting and checkpoint
+    # selection. Subtracting the horizon would allow information from validation.
+    if fit_end > earliest:
+        raise ValueError(
+            f"The graph encoder's information cutoff ({fit_end}) is "
+            f"after the earliest validation block starts ({earliest}). Lower "
+            "GraphEmbeddingConfig.fit_fraction or use fewer walk-forward folds."
+        )
 
 
 def with_forecast_horizons(prepared: PreparedModelData, config: ExperimentConfig) -> PreparedModelData:
@@ -492,6 +603,10 @@ def print_experiment_summary(experiment: ExperimentData) -> None:
         "->",
         test_df["settlement_date"].max(),
     )
+
+    if data.embedding_columns:
+        print("Graph embedding features:", len(data.embedding_columns))
+        print("Graph encoder fitted before:", data.embedding_fit_end)
 
     column = config.aemo_forecast_column
     print("\nAEMO FORECAST AVAILABILITY")
