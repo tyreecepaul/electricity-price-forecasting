@@ -267,10 +267,12 @@ def test_tcn_progress_can_be_disabled(
     assert progress_bars == []
 
 
-def test_other_neural_models_remain_quiet(
+@pytest.mark.parametrize("show_progress", [True, False])
+def test_other_neural_models_use_shared_progress_setting(
     progress_bars: list[RecordingProgress],
+    show_progress: bool,
 ) -> None:
-    """Leave the shared trainer's existing model output unchanged."""
+    """The shared trainer respects the progress setting for other models too."""
     from electricity_price_forecasting_model.final_model.gru import GRUModel
 
     model: GRUModel = GRUModel(
@@ -280,10 +282,15 @@ def test_other_neural_models_remain_quiet(
         max_epochs=1,
         device="cpu",
     )
+    model.show_progress = show_progress
 
     model.train(*progress_training_data())
 
-    assert progress_bars == []
+    assert len(progress_bars) == int(show_progress)
+    if show_progress:
+        bar = progress_bars[0]
+        assert bar.options["desc"] == "GRU epoch 1/1"
+        assert bar.items_seen == 3 and bar.closed
 
 
 def test_tcn_progress_does_not_change_training_result(

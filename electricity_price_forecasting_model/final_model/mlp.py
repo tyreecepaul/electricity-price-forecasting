@@ -36,7 +36,6 @@ class MLPModel(TorchForecastModel):
         interval_minutes: int = 5,
     ) -> None:
         hidden_sizes = tuple(int(size) for size in hidden_sizes)
-        hidden_sizes = tuple(int(size) for size in hidden_sizes)
         if not hidden_sizes or any(size <= 0 for size in hidden_sizes):
             raise ValueError("hidden_sizes must contain positive integers")
         rates = (

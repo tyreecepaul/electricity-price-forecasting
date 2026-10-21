@@ -3,11 +3,9 @@
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from pipeline.contracts import price_values
 from pipeline.evaluation import (
-    compare_models,
     compare_models_by_horizon,
     compare_models_by_price_regime,
 )
@@ -27,9 +25,8 @@ def plot_horizon_errors(results, prepared):
     """Show MAE and RMSE together, leaving unavailable baseline leads as gaps."""
     import matplotlib.pyplot as plt
 
-    horizons = prepared.forecast_horizons or (prepared.horizon,)
-    table = (compare_models_by_horizon(results, prepared) if prepared.forecast_horizons
-             else pd.concat({prepared.horizon: compare_models(results, prepared)}, names=["horizon_minutes"]))
+    horizons = prepared.forecast_horizons
+    table = compare_models_by_horizon(results, prepared)
     figure, axes = plt.subplots(1, 2, figsize=(12, 4.5), layout="constrained")
     for name, style in _styles(results).items():
         if name not in table.index.get_level_values("model"):
@@ -235,7 +232,7 @@ def plot_forecast_examples(results, prepared, *, seed=42, count=6):
     """Sample shared test origins without using model errors or future prices to rank them."""
     import matplotlib.pyplot as plt
 
-    horizons = prepared.forecast_horizons or (prepared.horizon,)
+    horizons = prepared.forecast_horizons
     actual = price_values(prepared.test_df, prepared.forecast_horizons).reshape(len(prepared.test_df), -1)
     eligible = np.isfinite(actual).all(axis=1) & np.isfinite(prepared.test_df["rrp"].to_numpy())
     for result in results:

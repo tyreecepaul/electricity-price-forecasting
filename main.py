@@ -53,9 +53,6 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         ARIMAModel,
         {
-            # ARIMA forecasts prices itself, so it must know the experiment's target.
-            "horizon_minutes": [EXPERIMENT.horizon_minutes],
-            "target_type": [EXPERIMENT.target_type],
             # Chosen on validation MAE for VIC1 at 30 minutes (test MAE 13.40).
             "p": [2],
             "d": [1],
@@ -101,15 +98,15 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         TransformerModel,
         {
-            "sequence_length": [72], #72
-            "d_model": [64],# 32
-            "nhead": [4], #8
-            "num_layers": [3], #6
-            "dim_feedforward": [128],#64
-            "dropout": [0.0], #0.1
-            "learning_rate": [0.001], #test weight decay next
+            "sequence_length": [72],
+            "d_model": [64],
+            "nhead": [4],
+            "num_layers": [3],
+            "dim_feedforward": [128],
+            "dropout": [0.0],
+            "learning_rate": [0.001],
             "weight_decay": [0.0001],
-            "batch_size": [128], #64
+            "batch_size": [128],
             "prediction_batch_size": [256],
             "max_epochs": [50],
             "patience": [10],
