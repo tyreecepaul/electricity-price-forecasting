@@ -245,6 +245,13 @@ identities (path, size and modification time). Changes in upstream data that
 have not been downloaded cannot be detected automatically. `--refresh` rebuilds
 prepared data through ingestion; existing ingestion caches may still be reused.
 
+Rerunning a region with matching data and feature settings loads the complete
+prepared dataset, including all twelve target columns and any GNN embeddings.
+It skips ingestion, feature construction, target construction, and encoder fitting.
+Compatible older feature-only caches are upgraded once in place. Model search
+and training still run; changing only a forecaster's hyperparameters does not
+rebuild the data. Switching GNN settings uses a separate prepared cache.
+
 `python main.py` then:
 
 1. loads or builds leakage-safe model data;

@@ -339,7 +339,14 @@ def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypat
     assert predictions.shape == experiment.prepared.y_test.shape
     assert np.isfinite(predictions).all()
 
-    cached = pipeline.prepare_experiment(config)
+    def unexpected_preparation(*args, **kwargs):
+        pytest.fail("A cached rerun rebuilt data, targets, or the graph encoder")
+
+    with monkeypatch.context() as rerun:
+        rerun.setattr(pipeline, "prepare_model_data", unexpected_preparation)
+        rerun.setattr(pipeline, "with_forecast_horizons", unexpected_preparation)
+        rerun.setattr(encoder, "compute_graph_embeddings", unexpected_preparation)
+        cached = pipeline.prepare_experiment(config)
     assert calls == [(60, "nem")]
     pd.testing.assert_frame_equal(cached.prepared.X_test, experiment.prepared.X_test)
 
@@ -356,7 +363,10 @@ def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypat
     plain_model.train(*final_training_data(plain_model, plain.prepared))
     assert predict_test(plain_model, plain.prepared).shape == plain.prepared.y_test.shape
     assert plain_config.cache_file != config.cache_file
-    pipeline.prepare_experiment(plain_config)
+    with monkeypatch.context() as rerun:
+        rerun.setattr(pipeline, "prepare_model_data", unexpected_preparation)
+        rerun.setattr(pipeline, "with_forecast_horizons", unexpected_preparation)
+        pipeline.prepare_experiment(plain_config)
     assert calls == [(60, "nem")]
 
 
@@ -377,6 +387,53 @@ def test_cache_identity_tracks_the_graph_feature_setting(monkeypatch):
     assert plain.cache_file != standard.cache_file
     assert plain.cache_metadata()["graph_embedding"] is None
     assert "graph_source_fingerprint" not in plain.cache_metadata()
+
+
+def test_existing_feature_cache_is_upgraded_without_rebuilding(monkeypatch, tmp_path):
+    import joblib
+    import pipeline.experiment_pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "source_fingerprint", lambda: "unchanged")
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+                              graph_embedding=None, feature_config=FEATURE_CONFIG)
+    joblib.dump({"metadata": config.cache_metadata(), "data": prepared_data()}, config.cache_file)
+
+    def unexpected_rebuild(*args, **kwargs):
+        pytest.fail("Upgrading a compatible cache rebuilt source features or the encoder")
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", unexpected_rebuild)
+    monkeypatch.setattr(pipeline, "graph_embedding_stage", unexpected_rebuild)
+    upgraded = pipeline.load_prepared_data(config)
+    assert upgraded.forecast_horizons == config.horizons
+    assert upgraded.y_test.shape[1] == 12
+    assert joblib.load(config.cache_file)["data"].forecast_horizons == config.horizons
+    monkeypatch.setattr(pipeline, "with_forecast_horizons", unexpected_rebuild)
+    cached = pipeline.load_prepared_data(config)
+    pd.testing.assert_frame_equal(upgraded.y_test, cached.y_test)
+
+
+def test_prepared_cache_rebuilds_only_for_refresh_or_changed_inputs(monkeypatch, tmp_path):
+    import pipeline.experiment_pipeline as pipeline
+
+    fingerprint = ["original"]
+    monkeypatch.setattr(pipeline, "source_fingerprint", lambda: fingerprint[0])
+    builds = []
+
+    def prepare_local(**kwargs):
+        builds.append(kwargs)
+        return prepared_data()
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", prepare_local)
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+                              graph_embedding=None, feature_config=FEATURE_CONFIG)
+    pipeline.load_prepared_data(config)
+    pipeline.load_prepared_data(config)
+    assert len(builds) == 1
+    pipeline.load_prepared_data(config, force_refresh=True)
+    assert len(builds) == 2
+    fingerprint[0] = "revised-inputs"
+    pipeline.load_prepared_data(config)
+    assert len(builds) == 3
 
 
 def test_experiment_rejects_removed_modes_and_missing_graph_features(monkeypatch):

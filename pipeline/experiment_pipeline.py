@@ -282,6 +282,12 @@ def load_prepared_data(
         payload = joblib.load(config.cache_file)
         if _cache_payload_is_valid(payload, config):
             print(f"Loading prepared data from {config.cache_file.name}...")
+            # Upgrade compatible feature-only caches once, without ingestion or
+            # encoder fitting. Later runs load the complete twelve-target data.
+            if payload["data"].forecast_horizons != config.forecast_horizons:
+                print("Adding forecast targets to the existing prepared cache...")
+                payload["data"] = with_forecast_horizons(payload["data"], config)
+                joblib.dump(payload, config.cache_file)
             return payload["data"]
         print("Prepared-data cache metadata is incompatible; rebuilding cache...")
     else:
@@ -295,6 +301,7 @@ def load_prepared_data(
         config=config.feature_config,
         learned_features=graph_embedding_stage(config, force_refresh=force_refresh),
     )
+    data = with_forecast_horizons(data, config)
     payload = {
         "metadata": config.cache_metadata(),
         "data": data,
@@ -370,7 +377,6 @@ def prepare_experiment(
     leaked = [c for c in prepared.features if c == "target" or c.startswith("target_")]
     if leaked:
         raise ValueError(f"Target columns cannot be model inputs: {leaked}")
-    prepared = with_forecast_horizons(prepared, config)
     fit_df, validation_df = chronological_validation_split(
         prepared.train_df,
         config,

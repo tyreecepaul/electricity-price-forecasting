@@ -277,6 +277,7 @@ def test_experiment_uses_the_reliability_features_only_when_asked(
     for frame in (prepared.train_timeline, prepared.test_timeline, prepared.train_df, prepared.test_df):
         frame[columns] = 0.0
     prepared.features.extend(columns)
+    prepared = experiment_pipeline.with_forecast_horizons(prepared, config)
     experiment = prepare_experiment(config)
 
     extra = forecast_reliability_columns(prepared.train_df)
