@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from pipeline.contracts import METRIC_NAMES, forecast_vector, score_forecast
+from pipeline.contracts import METRIC_NAMES, forecast_array, score_forecast
 from pipeline.experiment_pipeline import ExperimentData, walk_forward_splits
 from pipeline.model import Model
 from pipeline.model_data import selection_data
@@ -86,6 +86,11 @@ def search_hyperparameters(
             config["selection_metric"] = metric
         if supports("interval_minutes") and settings is not None:
             config["interval_minutes"] = settings.feature_config.interval_minutes
+        if settings is not None:
+            # Classical models need explicit horizons; neural heads infer them from y.
+            for name in ("horizon_minutes", "target_type", "forecast_horizons"):
+                if supports(name):
+                    config[name] = getattr(settings, name)
         effective_configs.append(config)
         actuals, predictions, selected_epochs = [], [], []
         refit = {}
@@ -103,11 +108,12 @@ def search_hyperparameters(
                     training_result = validation_trainer(
                         data.x_train, data.y_train, data.x_validation, data.y_validation
                     )
-                predicted = forecast_vector(
-                    model.predict(data.x_validation), len(data.x_validation)
-                )
                 actual = data.y_validation.to_numpy(dtype=float)
-                rows = data.score_rows & np.isfinite(actual)
+                outputs = actual.shape[1] if actual.ndim == 2 else 1
+                actual = forecast_array(actual, len(data.x_validation), outputs, name="validation targets")
+                predicted = forecast_array(model.predict(data.x_validation), len(data.x_validation), outputs)
+                finite = np.isfinite(actual)
+                rows = data.score_rows & (finite.all(axis=1) if actual.ndim == 2 else finite)
                 if not rows.any() or not np.isfinite(predicted[rows]).all():
                     raise ValueError(
                         "Model produced missing/non-finite validation results"

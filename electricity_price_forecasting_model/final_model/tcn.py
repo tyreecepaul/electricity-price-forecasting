@@ -88,5 +88,6 @@ class TCNModel(TorchForecastModel):
             channels=self.channels,
             kernel_size=self.kernel_size,
             num_blocks=self.num_blocks,
-            dropout=self.dropout
+            dropout=self.dropout,
+            output_size=self.output_size,
         )

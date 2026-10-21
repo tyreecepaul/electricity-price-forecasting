@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import joblib
+import numpy as np
 import pandas as pd
 
 
@@ -53,6 +54,7 @@ def save_model_run(directory, model, search_result, test_df, predictions, result
         "validation_score": search_result.best_score,
         "test_metrics": result.metrics,
         "features": getattr(model, "feature_columns", []),
+        "target_columns": getattr(model, "target_columns", None),
         "training": asdict(model.training_result)
         if getattr(model, "training_result", None)
         else None,
@@ -67,8 +69,26 @@ def save_model_run(directory, model, search_result, test_df, predictions, result
             if c in test_df
         ]
     ].copy()
-    rows["prediction_rrp"] = predictions
-    rows["valid"] = result.valid_mask
+    if np.asarray(predictions).ndim == 2:
+        # The same long format covers deep heads, conditioned trees and ARIMA.
+        horizons = search_result.best_config.get("forecast_horizons")
+        if not horizons:
+            horizons = tuple(int(c.removeprefix("target_h")) for c in model.target_columns)
+        parts = []
+        for position, horizon in enumerate(horizons):
+            part = rows.copy()
+            part["horizon_minutes"] = horizon
+            part["target_time"] = part["settlement_date"] + pd.Timedelta(minutes=horizon)
+            part["target_rrp"] = test_df[f"target_rrp_h{horizon:02d}"].to_numpy()
+            part["target"] = test_df[f"target_h{horizon:02d}"].to_numpy()
+            part["prediction_rrp"] = predictions[:, position]
+            part["valid"] = result.valid_mask[:, position]
+            parts.append(part)
+        rows = pd.concat(parts, ignore_index=True)
+        rows.pivot(index=["region", "settlement_date"], columns="horizon_minutes", values="prediction_rrp").to_csv(path / "forecast_curves.csv")
+    else:
+        rows["prediction_rrp"] = predictions
+        rows["valid"] = result.valid_mask
     rows.to_csv(path / "predictions.csv", index=False)
     # Move a copy to CPU so the bundle can load without a GPU while the caller's
     # live model retains its original device and state.

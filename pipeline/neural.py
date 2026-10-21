@@ -20,7 +20,7 @@ from tqdm.auto import tqdm
 
 from pipeline.contracts import (
     METRIC_NAMES,
-    forecast_vector,
+    forecast_array,
     score_forecast,
     temporal_metadata,
     validate_context,
@@ -34,6 +34,14 @@ from pipeline.preprocessing import (
 )
 from pipeline.sequences import ContextSequenceDataset, SequenceDataset
 from pipeline.training import TorchEarlyStoppingTrainer
+
+
+def resolve_device(device=None) -> torch.device:
+    """Use an explicit device or prefer an available CUDA/Intel GPU."""
+    if device is None or str(device) == "auto":
+        device = ("cuda" if torch.cuda.is_available() else
+                  "xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "cpu")
+    return torch.device(device)
 
 
 class TorchForecastModel(Model):
@@ -112,9 +120,7 @@ class TorchForecastModel(Model):
         self.scheduler_gamma = scheduler_gamma
         self.mixed_precision = mixed_precision
         self.interval_minutes = interval_minutes
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = resolve_device(device)
         self.network = None
         self.preprocessor = None
         self.target_transformer = None
@@ -136,12 +142,7 @@ class TorchForecastModel(Model):
 
     def _forecast_values(self, values, expected_rows):
         """Preserve the horizon axis while keeping single-output predictions 1D."""
-        if self.output_size == 1:
-            return forecast_vector(values, expected_rows)
-        values = np.asarray(values, dtype=float)
-        if values.shape != (expected_rows, self.output_size):
-            raise ValueError(f"Expected predictions shaped ({expected_rows}, {self.output_size}); got {values.shape}")
-        return values
+        return forecast_array(values, expected_rows, self.output_size)
 
     def _set_random_seed(self):
         random.seed(self.random_seed)

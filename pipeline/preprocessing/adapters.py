@@ -45,9 +45,9 @@ class PreparedModelData:
     """
 
     X_train: pd.DataFrame
-    y_train: pd.Series
+    y_train: pd.Series | pd.DataFrame
     X_test: pd.DataFrame
-    y_test: pd.Series
+    y_test: pd.Series | pd.DataFrame
     train_df: pd.DataFrame
     test_df: pd.DataFrame
     features: list[str]
@@ -56,6 +56,8 @@ class PreparedModelData:
     target_type: str
     train_timeline: pd.DataFrame | None = None
     test_timeline: pd.DataFrame | None = None
+    # Empty preserves the original scalar contract; populated after cached preparation.
+    forecast_horizons: tuple[int, ...] = ()
 
 
 def extract_actuals_and_p5min(

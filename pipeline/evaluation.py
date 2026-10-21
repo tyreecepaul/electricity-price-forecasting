@@ -1,9 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
-from pipeline.contracts import forecast_vector
+from pipeline.contracts import forecast_array, price_values
 from pipeline.model import Model
 from pipeline.preprocessing import PreparedModelData
 
@@ -26,18 +26,18 @@ class ModelResult:
 
 def _validate_result_lengths(
     results: list[ModelResult],
-    expected_rows: int,
+    expected_shape: tuple[int, ...],
 ) -> None:
     for result in results:
-        if result.predictions.size != expected_rows:
+        if result.predictions.shape != expected_shape:
             raise ValueError(
                 f"{result.model_name} has {result.predictions.size} predictions "
-                f"for {expected_rows} test rows"
+                f"for expected shape {expected_shape}"
             )
-        if result.valid_mask.size != expected_rows:
+        if result.valid_mask.shape != expected_shape:
             raise ValueError(
                 f"{result.model_name} has a validity mask of length "
-                f"{result.valid_mask.size} for {expected_rows} test rows"
+                f"{result.valid_mask.shape} for expected shape {expected_shape}"
             )
 
 
@@ -61,12 +61,17 @@ def evaluate(
     *,
     mask: np.ndarray | None = None,
 ) -> ModelResult:
-    actual = forecast_vector(actual, len(actual), name="actual")
-    predicted = forecast_vector(predicted, len(actual))
+    actual = np.asarray(actual, dtype=float)
+    outputs = actual.shape[1] if actual.ndim == 2 else 1
+    actual = forecast_array(actual, len(actual), outputs, name="actual")
+    predicted = forecast_array(predicted, len(actual), outputs)
 
     valid_mask: np.ndarray = np.isfinite(actual) & np.isfinite(predicted)
     if mask is not None:
-        valid_mask &= forecast_vector(mask, len(actual), name="mask").astype(bool)
+        supplied = np.asarray(mask, dtype=bool)
+        if actual.ndim == 2 and supplied.shape == (len(actual),):
+            supplied = np.broadcast_to(supplied[:, None], actual.shape)
+        valid_mask &= forecast_array(supplied, len(actual), outputs, name="mask").astype(bool)
 
     return ModelResult(
         model_name=model.get_model_name(),
@@ -84,9 +89,12 @@ def _comparison_inputs(
         raise ValueError("needs at least one ModelResult")
 
     test_df = test_data.test_df
-    actual = test_df["target_rrp"].to_numpy(dtype=float)
+    horizons = getattr(test_data, "forecast_horizons", ())
+    actual = price_values(test_df, horizons)
     persistence = test_df["rrp"].to_numpy(dtype=float)
-    _validate_result_lengths(results, actual.size)
+    if actual.ndim == 2:
+        persistence = np.broadcast_to(persistence[:, None], actual.shape)
+    _validate_result_lengths(results, actual.shape)
 
     shared_mask = np.isfinite(actual) & np.isfinite(persistence)
     for result in results:
@@ -98,11 +106,11 @@ def _comparison_inputs(
     ]
     forecasts.append(("Persistence", persistence))
 
-    aemo_column = f"p5_h{test_data.horizon:02d}_rrp"
-    if aemo_column in test_df.columns:
-        aemo = test_df[aemo_column].to_numpy(dtype=float)
+    aemo_columns = [f"p5_h{h:02d}_rrp" for h in (horizons or (test_data.horizon,))]
+    if all(column in test_df for column in aemo_columns):
+        aemo = test_df[aemo_columns].to_numpy(dtype=float) if actual.ndim == 2 else test_df[aemo_columns[0]].to_numpy(dtype=float)
         aemo_mask = np.isfinite(aemo)
-        if aemo_mask.any():
+        if aemo_mask.any(axis=0).all():
             shared_mask &= aemo_mask
             forecasts.append(("AEMO P5MIN", aemo))
 
@@ -189,6 +197,22 @@ def compare_models_by_price_regime(
     return pd.concat(comparisons, names=["regime", "model"])
 
 
+def compare_models_by_horizon(results: list[ModelResult], test_data: PreparedModelData) -> pd.DataFrame:
+    """Reuse scalar comparisons, including available AEMO baselines, per lead."""
+    tables = {}
+    for position, horizon in enumerate(test_data.forecast_horizons):
+        scalar_data = replace(
+            test_data, horizon=horizon, forecast_horizons=(),
+            test_df=test_data.test_df.assign(target_rrp=test_data.test_df[f"target_rrp_h{horizon:02d}"]),
+        )
+        scalar_results = [
+            ModelResult(r.model_name, r.predictions[:, position], r.valid_mask[:, position], {})
+            for r in results
+        ]
+        tables[horizon] = compare_models(scalar_results, scalar_data)
+    return pd.concat(tables, names=["horizon_minutes", "model"])
+
+
 def _display_table(
     comparison: pd.DataFrame,
     *,
@@ -204,6 +228,7 @@ def _display_table(
             "n_rows": "Rows",
             "mae_vs_persistence_pct": "vs Persistence",
             "mae_vs_aemo_pct": "vs AEMO",
+            "fit_seconds": "Fit (s)",
         }
     )
     if not include_sse:
@@ -223,6 +248,8 @@ def _display_table(
         formatters["Rows"] = lambda value: f"{int(value):,}"
     if "vs AEMO" in display.columns:
         formatters["vs AEMO"] = lambda value: f"{value:+.2f}%"
+    if "Fit (s)" in display.columns:
+        formatters["Fit (s)"] = lambda value: f"{value:.1f}"
 
     return display.to_string(formatters=formatters, na_rep="n/a")
 
@@ -253,14 +280,29 @@ def print_price_regime_summary(
 def print_evaluation_summary(
     results: list[ModelResult],
     test_data: PreparedModelData,
+    verbose: bool = True,
+    fit_times: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Print compact overall and price-regime final-test comparisons."""
+    """Print a leaderboard; main opts out of legacy detailed tables by default."""
     comparison = compare_models(results, test_data)
+    if fit_times:
+        comparison["fit_seconds"] = comparison.index.map(fit_times)
 
     print("\nFINAL TEST RESULTS")
     print("------------------")
     print("All forecasts are scored on the same finite test rows.")
-    print(_display_table(comparison, include_sse=True, include_rows=True))
+    values = int(comparison["n_rows"].iloc[0])
+    print(f"{len(test_data.test_df):,} test origins; {values:,} shared scored forecast values.")
+    if getattr(test_data, "forecast_horizons", ()):
+        print("Overall errors pool all forecast origins and horizons.")
+    display = comparison if verbose else comparison.drop(columns="median_ae")
+    print(_display_table(display, include_sse=verbose, include_rows=False))
     print("\nPositive percentages mean lower MAE than the named baseline.")
-    print_price_regime_summary(results, test_data)
+    if fit_times:
+        print("Fit time includes validation search and final refit; excludes GradientSHAP.")
+    if verbose:
+        print_price_regime_summary(results, test_data)
+        if getattr(test_data, "forecast_horizons", ()):
+            print("\nTEST RESULTS BY HORIZON ($/MWh)")
+            print(_display_table(compare_models_by_horizon(results, test_data), include_sse=False, include_rows=True))
     return comparison

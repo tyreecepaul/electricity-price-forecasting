@@ -2,6 +2,7 @@ import argparse
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -14,23 +15,26 @@ from electricity_price_forecasting_model.final_model.tcn import TCNModel
 from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
-from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
+from pipeline.attribution import ShapSummary, feature_lag_importance, importance_percent
+from pipeline.evaluation import ModelResult, compare_models_by_horizon, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
     ExperimentConfig,
     ExperimentData,
+    HOUR_HORIZONS,
     prepare_experiment,
     print_experiment_summary,
     reconstruct_price_forecast,
 )
 from pipeline.model import Model
 from pipeline.model_data import final_training_data, predict_test
-from pipeline.contracts import indexed_features
+from pipeline.contracts import indexed_features, price_values
 from pipeline.neural import TorchForecastModel
 from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
     region="VIC1",
     horizon_minutes=30,
+    forecast_mode="multioutput",  # "multioutput" predicts 5, 10, ..., 60 minutes.
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -200,18 +204,50 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         default=EXPERIMENT.selection_metric,
     )
     parser.add_argument("--seed", type=int, default=EXPERIMENT.random_seed)
+    parser.add_argument("--forecast-mode", choices=["single", "multioutput"],
+                        default=EXPERIMENT.forecast_mode,
+                        help="One configured target, or twelve outputs at 5-minute intervals through 60 minutes.")
+    parser.add_argument("--horizon-minutes", type=int, default=EXPERIMENT.horizon_minutes,
+                        help="Single-target lead time; multioutput always forecasts 5 through 60 minutes.")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xpu"], default="auto",
+                        help="Neural device. Auto prefers CUDA, then Intel XPU, then CPU.")
+    parser.add_argument("--epochs", type=int, help="Override the neural epoch limit in the model grids.")
+    parser.add_argument("--skip-shap", action="store_true", help="Skip neural GradientSHAP reporting.")
+    parser.add_argument("--shap-horizons", nargs="+", type=int,
+                        help="Outputs to explain in minutes; defaults to all forecast horizons.")
+    parser.add_argument("--shap-top-features", type=int, default=20,
+                        help="Number of features in SHAP plots; 0 displays all features.")
+    parser.add_argument("--shap-3d", action="store_true",
+                        help="Add rotating 3D sequence-importance surfaces with --plot or --save.")
+    parser.add_argument("--shap-samples", type=int, default=128)
+    parser.add_argument("--shap-draws", type=int, default=128)
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(__file__).resolve().parent / "reports" / "runs",
     )
     parser.add_argument("--save", action="store_true", help="Save models and result artifacts; disabled by default.")
+    parser.add_argument("--plot", action="store_true", help="Display horizon-error plots and a separate SHAP heatmap for each deep model.")
+    parser.add_argument("--plot-details", action="store_true", help="Include price-regime plots with --plot or --save.")
+    parser.add_argument("--verbose", action="store_true", help="Print full SHAP, timestep, regime and per-horizon tables.")
     parser.add_argument(
         "--refresh",
         action="store_true",
         help="Rebuild prepared data from ingestion/cache",
     )
-    return parser.parse_args(arguments)
+    args = parser.parse_args(arguments)
+    if args.plot_details and not (args.plot or args.save):
+        parser.error("--plot-details requires --plot or --save")
+    if args.shap_3d and not (args.plot or args.save):
+        parser.error("--shap-3d requires --plot or --save")
+    if args.shap_top_features < 0:
+        parser.error("--shap-top-features must be zero (all features) or positive")
+    if min(args.shap_samples, args.shap_draws, args.horizon_minutes) < 1 or (args.epochs is not None and args.epochs < 1):
+        parser.error("Horizons, epochs and attribution counts must be positive")
+    horizons = HOUR_HORIZONS if args.forecast_mode == "multioutput" else (args.horizon_minutes,)
+    if args.shap_horizons and not set(args.shap_horizons).issubset(horizons):
+        parser.error(f"--shap-horizons must select forecast outputs from {horizons}")
+    return args
 
 
 def sequence_attribution_summary(
@@ -229,11 +265,87 @@ def sequence_attribution_summary(
             "mean_signed_contribution": values.sum(axis=1).mean(),
         })
     summary = pd.DataFrame(rows).set_index("sequence_lag")
-    total = summary["mean_absolute_contribution"].sum()
-    summary["absolute_share_percent"] = (
-        100 * summary["mean_absolute_contribution"] / total if total > 0 else 0.0
-    )
+    summary["absolute_share_percent"] = importance_percent(summary[["mean_absolute_contribution"]]).iloc[:, 0]
     return summary
+
+
+def report_gradient_shap(model, prepared, reference_features, config, run_directory=None,
+                         *, horizons=None, sample_size=128, n_samples=128, verbose=True) -> ShapSummary:
+    """Retain small importance summaries for plots; print full diagnostics on request."""
+    requested = tuple(sorted(set(horizons or config.horizons)))
+    if not set(requested).issubset(config.horizons):
+        raise ValueError(f"Attribution horizons must be selected from {config.horizons}")
+    history = None
+    if model.requires_sequence:
+        inputs = indexed_features(prepared.test_timeline, prepared.features)
+        history = indexed_features(prepared.train_timeline, prepared.features)
+        keys = indexed_features(prepared.test_df, prepared.features).index
+        positions = inputs.index.get_indexer(keys)
+    else:
+        inputs = prepared.X_test
+        positions = np.arange(len(inputs))
+    importances, feature_lags, residuals = {}, {}, []
+    for horizon in requested:
+        target = config.horizons.index(horizon) if config.forecast_horizons else None
+        if verbose:
+            print(f"\nGradientSHAP: +{horizon}min {config.target_type}, "
+                  f"samples<={sample_size}, references<=64, draws={n_samples}", flush=True)
+        attribution = model.gradient_shap(
+            inputs, reference_features, history=history, positions=positions, target=target,
+            sample_size=sample_size, baseline_size=64, n_samples=n_samples, device=model.device,
+        )
+        importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
+            "mean_absolute_contribution"
+        )
+        feature_summary = importance.to_frame().join(attribution.mean().rename("mean_signed_contribution"))
+        feature_summary["absolute_share_percent"] = importance_percent(importance.to_frame()).iloc[:, 0]
+        importances[horizon] = importance
+        if model.requires_sequence:
+            feature_lags[horizon] = feature_lag_importance(attribution, model.interval_minutes)
+        residual = np.abs(attribution.attrs["completeness_residual"])
+        residuals.append(float(residual.mean()))
+        if verbose:
+            print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
+                  f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
+            print("Top 10 feature contributions (shares use all features and sequence steps):")
+            print(feature_summary.head(10).to_string(float_format=lambda value: f"{value:.3f}"))
+            print(f"Attribution residual: mean absolute={residual.mean():.4f}, max absolute={residual.max():.4f} $/MWh")
+        if model.requires_sequence and (verbose or run_directory is not None):
+            timestep_summary = sequence_attribution_summary(attribution.attrs["lag_attributions"], model.interval_minutes)
+            if verbose:
+                print("Timestep importance (lag 0 = latest observation):")
+                print(timestep_summary.to_string(float_format=lambda value: f"{value:.3f}"))
+        if run_directory is not None:
+            path = run_directory / model_cli_name(type(model))
+            suffix = f"_h{horizon:02d}" if config.forecast_horizons else ""
+            attribution.assign(completeness_residual=attribution.attrs["completeness_residual"]).to_csv(path / f"gradient_shap{suffix}.csv")
+            feature_summary.to_csv(path / f"feature_importance{suffix}.csv", index_label="feature")
+            if model.requires_sequence:
+                attribution.attrs["lag_attributions"].to_csv(path / f"gradient_shap_by_lag{suffix}.csv")
+                timestep_summary.to_csv(path / f"gradient_shap_timestep_summary{suffix}.csv")
+                feature_lags[horizon].to_csv(path / f"gradient_shap_feature_sequence{suffix}.csv")
+    summary = pd.DataFrame(importances).sort_index(axis=1)
+    result = ShapSummary(summary, feature_lags)
+    relative = result.as_percent()
+    if not verbose:
+        top = relative.features.mean(axis=1).nlargest(3)
+        print("GradientSHAP shares of absolute attribution, averaged over "
+              f"{', '.join(map(str, requested))} min: " + "; ".join(f"{name}={value:.1f}%" for name, value in top.items()))
+        print(f"Mean absolute attribution residual across explained horizons: {np.mean(residuals):.3f} $/MWh")
+    diagnostics = result.diagnostics()
+    # Compact output compares the shortest and longest explained targets.
+    displayed = diagnostics if verbose else diagnostics.loc[sorted({requested[0], requested[-1]})]
+    print("Attribution concentration (shares of total magnitude, not accuracy):")
+    print(displayed.to_string(float_format=lambda value: f"{value:.1f}"))
+    if run_directory is not None:
+        path = run_directory / model_cli_name(type(model))
+        summary.to_csv(path / "gradient_shap_features_by_horizon.csv", index_label="feature")
+        relative.features.to_csv(path / "gradient_shap_feature_percent_by_horizon.csv", index_label="feature")
+        diagnostics.to_csv(path / "gradient_shap_concentration.csv")
+        if feature_lags:
+            result.lags.to_csv(path / "gradient_shap_sequence_by_horizon.csv", index_label="minutes_before_prediction")
+            relative.lags.to_csv(path / "gradient_shap_sequence_percent_by_horizon.csv", index_label="minutes_before_prediction")
+    return result
 
 
 def main(
@@ -243,6 +355,17 @@ def main(
     output_directory=None,
     save_results=False,
     force_refresh=False,
+    device=None,
+    max_epochs=None,
+    skip_shap=False,
+    shap_horizons=None,
+    shap_samples=128,
+    shap_draws=128,
+    shap_top_features=20,
+    shap_3d=False,
+    plot_results=False,
+    plot_details=False,
+    verbose=False,
 ) -> None:
     """Prepare shared data, select/refit each model, then score the held-out test.
 
@@ -250,11 +373,14 @@ def main(
     and fitting details stay behind the common model interface.
     """
     config = config or EXPERIMENT
+    if shap_horizons and not set(shap_horizons).issubset(config.horizons):
+        raise ValueError(f"Attribution horizons must be selected from {config.horizons}")
     experiment: ExperimentData = (
         prepare_experiment(config, force_refresh=True)
         if force_refresh
         else prepare_experiment(config)
     )
+    config = experiment.config
     print_experiment_summary(experiment)
 
     prepared = experiment.prepared
@@ -269,14 +395,22 @@ def main(
         else None
     )
 
-    y_test_price: np.ndarray = experiment.test_df["target_rrp"].to_numpy()
+    y_test_price = price_values(experiment.test_df, getattr(prepared, "forecast_horizons", ()))
 
     # Fit each model and find optimal hyperparameters
     results: list[ModelResult] = []
+    fit_times, shap_importances = {}, {}
 
     for model_factory, hyperparam_grid in select_model_registry(selected_models):
         print(f"=== {model_factory.model_name} ===")
+        hyperparam_grid = dict(hyperparam_grid)
+        if issubclass(model_factory, TorchForecastModel):
+            if device is not None:
+                hyperparam_grid["device"] = [device]
+            if max_epochs is not None:
+                hyperparam_grid["max_epochs"] = [max_epochs]
 
+        fit_started = perf_counter()
         search_result: SearchResult = search_hyperparameters(
             model_factory, hyperparam_grid, experiment
         )
@@ -284,11 +418,12 @@ def main(
         # Start a fresh fit on all pre-test data, using the selected epoch budget.
         # Reusing the search model would leave out its validation-period training data.
         model: Model = model_factory(**search_result.best_config)
-        device = getattr(model, "device", "cpu")
-        using_gpu = str(device).split(":")[0] in {"cuda", "xpu"}
-        print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({device})")
+        training_device = getattr(model, "device", "cpu")
+        using_gpu = str(training_device).split(":")[0] in {"cuda", "xpu"}
+        print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({training_device})")
         x_train, y_train = final_training_data(model, prepared)
         model.train(x_train, y_train)
+        fit_times[model.get_model_name()] = perf_counter() - fit_started
 
         y_pred: np.ndarray = predict_test(model, prepared)
         # Model outputs may be price changes or AEMO residuals. Convert them to
@@ -309,54 +444,32 @@ def main(
                 predicted_price,
                 result,
             )
-        if isinstance(model, TorchForecastModel):
-            sample_size, baseline_size, n_samples = 1024, 256, 2048
-            print(f"GradientShap: target={config.target_type}, samples<={sample_size}, "
-                  f"references<={baseline_size}, draws={n_samples}, seed={model.random_seed}")
-            frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
-            inputs = indexed_features(frame, prepared.features)
-            history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
-            positions = inputs.index.get_indexer(indexed_features(prepared.test_df, prepared.features).index)
-            attribution = model.gradient_shap(
-                inputs, x_train, history=history, positions=positions,
-                sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
+        if isinstance(model, TorchForecastModel) and not skip_shap:
+            print(f"Computing GradientSHAP for {model.get_model_name()}...", flush=True)
+            shap_importances[model.get_model_name()] = report_gradient_shap(
+                model, prepared, x_train, config, run_directory,
+                horizons=shap_horizons, sample_size=shap_samples, n_samples=shap_draws, verbose=verbose,
             )
-            print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
-                  f"references={attribution.attrs['baseline_count']}, "
-                  f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
-            importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
-                "mean_absolute_contribution"
-            )
-            feature_scope = "all timesteps" if model.requires_sequence else "single input row"
-            print(f"Top 10 features ($/MWh; {feature_scope}):")
-            print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
-            residual = np.abs(attribution.attrs["completeness_residual"])
-            print(f"Attribution residual ($/MWh): mean absolute={residual.mean():.4f}, "
-                  f"max absolute={residual.max():.4f}")
-            if model.requires_sequence:
-                timestep_summary = sequence_attribution_summary(
-                    attribution.attrs["lag_attributions"], model.interval_minutes,
-                )
-                print("Timestep importance ($/MWh; all features; lag 0 = latest input):")
-                print(timestep_summary.to_string(float_format=lambda x: f"{x:.3f}"))
-            if run_directory is not None:
-                path = run_directory / model_cli_name(model_factory)
-                attribution.assign(
-                    completeness_residual=attribution.attrs["completeness_residual"],
-                ).to_csv(path / "gradient_shap.csv")
-                importance.to_csv(path / "feature_importance.csv", index_label="feature")
-                if model.requires_sequence:
-                    attribution.attrs["lag_attributions"].to_csv(path / "gradient_shap_by_lag.csv")
-                    timestep_summary.to_csv(path / "gradient_shap_timestep_summary.csv")
 
-    print_evaluation_summary(results, prepared)
+    leaderboard = print_evaluation_summary(results, prepared, verbose, fit_times)
     if run_directory is not None:
         save_run_summary(run_directory, results)
+        leaderboard.to_csv(run_directory / "leaderboard.csv")
+        if config.forecast_horizons:
+            compare_models_by_horizon(results, prepared).to_csv(run_directory / "metrics_by_horizon.csv")
         print(f"Run artifacts saved to {run_directory}")
+    if plot_results or run_directory is not None:
+        # Lazy import keeps text-only runs independent of a GUI backend.
+        from pipeline.plotting import present_results
+
+        present_results(results, prepared, shap_importances, show=plot_results,
+                        directory=run_directory, details=plot_details,
+                        top_features=shap_top_features, sequence_3d=shap_3d, seed=config.random_seed)
 
 
-if __name__ == "__main__":
-    cli_args = parse_args()
+def run_cli(arguments: Sequence[str] | None = None) -> None:
+    """Resolve command-line settings once for both entry points."""
+    cli_args = parse_args(arguments)
     main(
         cli_args.models,
         config=replace(
@@ -364,8 +477,25 @@ if __name__ == "__main__":
             walk_forward_folds=cli_args.folds,
             selection_metric=cli_args.metric,
             random_seed=cli_args.seed,
+            horizon_minutes=cli_args.horizon_minutes,
+            forecast_mode=cli_args.forecast_mode,
         ),
         output_directory=cli_args.output_dir,
         save_results=cli_args.save,
         force_refresh=cli_args.refresh,
+        device=cli_args.device,
+        max_epochs=cli_args.epochs,
+        skip_shap=cli_args.skip_shap,
+        shap_horizons=cli_args.shap_horizons,
+        shap_samples=cli_args.shap_samples,
+        shap_draws=cli_args.shap_draws,
+        shap_top_features=cli_args.shap_top_features,
+        shap_3d=cli_args.shap_3d,
+        plot_results=cli_args.plot,
+        plot_details=cli_args.plot_details,
+        verbose=cli_args.verbose,
     )
+
+
+if __name__ == "__main__":
+    run_cli()

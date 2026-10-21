@@ -59,7 +59,7 @@ class TemporalBlock(nn.Module):
         return self.activation(features + self.shortcut(inputs))
 
 class TCNNetwork(nn.Module):
-    """Produce one forecast from the final timestamp of a feature window"""
+    """Produce horizon forecasts from the final timestamp of a feature window."""
 
     def __init__(
         self,
@@ -67,7 +67,8 @@ class TCNNetwork(nn.Module):
         channels: int = 16,
         kernel_size: int = 3,
         num_blocks: int = 2,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        output_size: int = 1,
     ) -> None:
         """Build residual blocks with dilations 1, 2, 4 and so on"""
         super().__init__()
@@ -89,7 +90,7 @@ class TCNNetwork(nn.Module):
             ) for index in range(num_blocks)
         ]
         self.blocks: nn.Sequential = nn.Sequential(*blocks)
-        self.output: nn.Linear = nn.Linear(channels, 1)
+        self.output: nn.Linear = nn.Linear(channels, output_size)
 
     def temporal_features(self, inputs: torch.Tensor) -> torch.Tensor:
         """Return features shaped (batch, channels, time)"""
@@ -99,6 +100,6 @@ class TCNNetwork(nn.Module):
         return self.blocks(channels_first)
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Return one scalar forecast per input window"""
+        """Return one vector of forecasts per input window."""
         latest_features: torch.Tensor = self.temporal_features(inputs)[:, :, -1]
         return self.output(latest_features)

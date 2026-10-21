@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from pipeline.contracts import forecast_vector, indexed_features
+from pipeline.contracts import forecast_array, indexed_features, target_columns, target_values
 
 
 @dataclass
@@ -19,9 +19,9 @@ class ModelSplit:
     """
 
     x_train: pd.DataFrame
-    y_train: pd.Series
+    y_train: pd.Series | pd.DataFrame
     x_validation: pd.DataFrame
-    y_validation: pd.Series
+    y_validation: pd.Series | pd.DataFrame
     score_rows: np.ndarray
 
 
@@ -35,12 +35,13 @@ def selection_data(model, experiment, fit_df=None, validation_df=None) -> ModelS
     fit = experiment.fit_df if fit_df is None else fit_df
     validation = experiment.validation_df if validation_df is None else validation_df
     features = experiment.features
+    horizons = getattr(getattr(experiment, "config", None), "forecast_horizons", ())
     if not getattr(model, "requires_sequence", False):
         return ModelSplit(
             fit[features],
-            fit["target"],
+            target_values(fit, horizons),
             validation[features],
-            validation["target"],
+            target_values(validation, horizons),
             np.ones(len(validation), dtype=bool),
         )
 
@@ -58,14 +59,12 @@ def selection_data(model, experiment, fit_df=None, validation_df=None) -> ModelS
         + pd.Timedelta(minutes=experiment.config.horizon_minutes)
         < start
     )
-    training.loc[~eligible, "target"] = np.nan
+    training.loc[~eligible, target_columns(horizons)] = np.nan
     current = timeline.loc[timeline["settlement_date"].between(start, end)].copy()
     x_train = indexed_features(training, features)
     x_val = indexed_features(current, features)
-    y_train = pd.Series(
-        training["target"].to_numpy(), index=x_train.index, name="target"
-    )
-    y_val = pd.Series(current["target"].to_numpy(), index=x_val.index, name="target")
+    y_train, y_val = target_values(training, horizons).copy(), target_values(current, horizons).copy()
+    y_train.index, y_val.index = x_train.index, x_val.index
     keys = pd.MultiIndex.from_frame(validation[["region", "settlement_date"]])
     # Match by forecast origin, not by position: the full timeline may have
     # extra rows that were excluded from the supervised validation frame.
@@ -83,9 +82,8 @@ def final_training_data(model, prepared):
     if prepared.train_timeline is None:
         raise ValueError("Sequence models require a complete training timeline")
     inputs = indexed_features(prepared.train_timeline, prepared.features)
-    targets = pd.Series(
-        prepared.train_timeline["target"].to_numpy(), index=inputs.index, name="target"
-    )
+    targets = target_values(prepared.train_timeline, getattr(prepared, "forecast_horizons", ())).copy()
+    targets.index = inputs.index
     return inputs, targets
 
 
@@ -96,10 +94,12 @@ def predict_test(model, prepared):
     represents successive rolling forecasts, not one forecast of the entire
     test period issued at the training cutoff.
     """
+    outputs = len(getattr(prepared, "forecast_horizons", ())) or 1
     if not getattr(model, "requires_sequence", False):
-        return forecast_vector(model.predict(prepared.X_test), len(prepared.X_test))
+        return forecast_array(model.predict(prepared.X_test), len(prepared.X_test), outputs)
     inputs = indexed_features(prepared.test_timeline, prepared.features)
     history = indexed_features(prepared.train_timeline, prepared.features)
-    predicted = forecast_vector(model.predict(inputs, history=history), len(inputs))
+    predicted = forecast_array(model.predict(inputs, history=history), len(inputs), outputs)
     keys = pd.MultiIndex.from_frame(prepared.test_df[["region", "settlement_date"]])
-    return pd.Series(predicted, index=inputs.index).loc[keys].to_numpy()
+    aligned = pd.DataFrame(predicted, index=inputs.index) if predicted.ndim == 2 else pd.Series(predicted, index=inputs.index)
+    return aligned.loc[keys].to_numpy()

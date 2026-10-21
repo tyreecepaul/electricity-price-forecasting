@@ -82,4 +82,5 @@ class TransformerModel(TorchForecastModel):
             num_layers=self.num_layers,
             dim_feedforward=self.dim_feedforward,
             dropout=self.dropout,
+            output_size=self.output_size,
         )

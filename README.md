@@ -27,10 +27,23 @@ python -m pytest -q
 
 Configure the experiment and model grid in `main.py`:
 
+```bash
+# One target (30 minutes here), or the complete 5-to-60-minute curve.
+python main.py --models mlp gru lstm tcn transformer --forecast-mode single --horizon-minutes 30
+python main.py --models mlp gru lstm tcn transformer --forecast-mode multioutput --device xpu
+python main.py --models xgboost arima --forecast-mode multioutput
+```
+
+In multioutput mode, deep models use a 12-value output head, XGBoost fits one
+horizon-conditioned model, and ARIMA projects one fitted price model across the
+12 leads. Targets are matched by timestamp and the 60-minute embargo applies
+to the complete vector. All models score the same complete forecast origins.
+
 ```python
 EXPERIMENT = ExperimentConfig(
     region="NSW1",
     horizon_minutes=30,
+    forecast_mode="single",  # Or "multioutput" for all twelve 5-to-60-minute leads.
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -123,15 +136,15 @@ mutated by prediction calls. Both frames must use the same temporal index.
 
 To add another neural architecture, subclass `TorchForecastModel`, implement
 `_build_network(input_size)`, and set `requires_sequence = True` plus a
-`sequence_length` for temporal models. Forward passes return `(batch, 1)`.
-The shared wrapper returns `(N,)` forecasts on the configured target scale.
+`sequence_length` for temporal models. Forward passes return
+`(batch, self.output_size)`. The shared wrapper returns `(N,)` for one target
+or `(N, 12)` for the hourly curve, on the configured target scale.
 New row-based models can continue implementing `Model.train()` and `predict()`.
 Register a model factory and its hyperparameter grid in `main.py`.
 
-The current interface deliberately covers one region and one forecast horizon.
-Multi-horizon targets and separate known-future covariate tensors would require
-an explicit extended output/input contract; future actuals must never be used
-as known-future inputs.
+The interface forecasts one region at a time. Prepared feature columns,
+including learned embeddings when available, are separate from target columns;
+future actuals must never be used as known-future inputs.
 
 ### Reproducible model comparisons
 
@@ -149,19 +162,85 @@ use the median selected epoch across folds, even when `max_epochs` was omitted
 from the grid. Seeds come from `ExperimentConfig`/`--seed` unless a candidate
 explicitly sets its own `random_seed`.
 
-Runs print results without saving artifacts by default. Add `--save` to save
+Runs print one compact leaderboard with MAE, RMSE, baseline improvements and
+fit time (validation search plus final refit, excluding SHAP). Sample counts
+are printed once. Add `--verbose` for full SHAP, timestep, price-regime and
+per-horizon tables.
+
+```bash
+python main.py --models mlp gru xgboost --plot
+python main.py --plot --plot-details
+python main.py --verbose
+```
+
+`--plot` displays MAE/RMSE curves for all models, six randomly sampled test
+price reconstructions, and a separate SHAP view for every explained deep model.
+Each reconstruction compares all models, actual prices, persistence and available
+AEMO forecasts at the same origin. Sampling uses `--seed` for reproducibility.
+The MLP uses a ranked horizontal bar chart with a forecast-horizon slider;
+its top features are selected separately for each target. Sequence models also
+have an overview of the top 20 features across all forecast horizons.
+Set `--shap-top-features 30` to show more, or `--shap-top-features 0`
+to show every feature. Matching plot types share colour scales across models.
+All GradientSHAP plots show **percentages of total absolute attribution per
+forecast horizon**, using every feature and sequence step in the denominator
+before selecting the top features. These describe attribution shares, not
+accuracy or explained variance. An all-zero attribution horizon stays zero.
+Price curves and MAE/RMSE retain their $/MWh units.
+
+Sequence models also show sequence-step importance across forecast horizons,
+and a feature-by-sequence heatmap with a forecast-horizon slider. This separates
+minutes **ahead** (the forecast lead) from minutes **before** the forecast origin
+(observed context). Every sequence step is drawn; long windows thin tick labels
+only. Hovering a cell shows its exact value in Matplotlib's toolbar. The top
+features are selected and reordered by their total importance for the chosen
+horizon; the colour scale remains fixed when switching horizons.
+
+```bash
+python main.py --models gru lstm --plot --shap-top-features 30
+python main.py --models tcn --plot --shap-3d
+```
+
+`--shap-3d` optionally adds rotatable surfaces of forecast horizon versus sequence
+step, with height showing percentage attribution summed over features.
+The 2D views retain the individual feature details. No additional dependency is
+needed. The saved feature-by-sequence image shows the longest explained horizon;
+CSV summaries include every explained horizon and sequence step.
+The console also compares P5 and top-five feature shares, the latest input row's
+share, the most recent 30 minutes of sequence rows, and the sequence lookback covering 90%
+of attribution (shortest/longest forecast targets; all targets with `--verbose`).
+For five-minute data, the recent-30-minute share covers lags 0, 5, ..., 25.
+These sequence diagnostics measure input-row positions. A feature such as
+`rrp_lag_288` already represents older information even in the latest row;
+engineered feature lookbacks are additional to the sequence lookback.
+Saved CSVs retain raw magnitudes alongside percentage and concentration summaries.
+`--plot-details` adds price-regime improvements. It
+requires `--plot` or `--save`. Plots use the same evaluation masks as the tables;
+missing AEMO horizons remain gaps. With `--skip-shap`, the SHAP heatmap is omitted.
+
+Runs do not save artifacts by default. Add `--save` to save
 configuration, dependency versions, data provenance, trial/fold
 scores, per-origin predictions, training history and fitted CPU model bundles
 (including scalers and history) under `reports/runs/<unique-run-id>/`.
 Use `--save --output-dir` to choose a save location. Load
 your own model bundles with `joblib.load`; do not load untrusted joblib files.
+Saved runs also include `leaderboard.csv`, `errors_by_horizon.png`, and model
+SHAP plots (`gradient_shap_top_features.png` for MLP, heatmaps for sequence models).
+`--save` exports
+plots without opening windows unless `--plot` is also supplied.
 
-Neural runs also print Captum GradientShap feature rankings for up to 1,024 test
-observations, using 256 sampled training references and 2,048 random draws per
-observation. Sequence references are complete historical windows. Contributions
+Neural runs print compact Captum GradientShap feature summaries for up to 128 test
+observations, using 64 sampled training references and 128 random draws per
+observation. Multioutput mode now explains all twelve horizons by default. This
+requires four times as many attribution calls as explaining only 5, 30 and 60
+minutes. For a faster run select `--shap-horizons 5 30 60`. Adjust computation with
+`--shap-samples` / `--shap-draws`, or omit it with `--skip-shap`.
+Sequence references are complete historical windows. Contributions
 explain the learned target in $/MWh relative to the reference predictions; the
 printed residual reflects Monte Carlo approximation. `--save` writes
 `gradient_shap.csv`, `feature_importance.csv` and sequence lag contributions.
+Multioutput filenames include the horizon. No result/model/attribution folders
+are created without `--save`; reusable raw and prepared-data caches remain enabled.
 
 Prepared caches live under this repository's `model_cache`. Compatibility now
 includes the feature configuration, preparation code and local raw-cache file

@@ -11,6 +11,7 @@ class Forecaster(nn.Module):
             num_layers, 
             dim_feedforward=2048,
             dropout=0.0,
+            output_size=1,
             ):
         super(Forecaster, self).__init__()
         self.input_layer = nn.Linear(input_size, d_model)
@@ -21,7 +22,7 @@ class Forecaster(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             )
-        self.output_layer = nn.Linear(d_model, 1)  # Assuming output is a single value
+        self.output_layer = nn.Linear(d_model, output_size)
 
     def forward(self, x, mask=None):
         x = self.input_layer(x)
