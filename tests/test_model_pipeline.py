@@ -53,6 +53,8 @@ def experiment():
         test_data=SimpleNamespace(df=raw.iloc[40:]),
     )
     config = ExperimentConfig(
+        forecast_mode="single",
+        graph_embedding=None,
         horizon_minutes=10,
         validation_fraction=0.2,
         model_features=features,
@@ -190,7 +192,7 @@ def test_eager_helper_rejects_future_history(experiment):
 def test_column_predictions_do_not_broadcast():
     frame = pd.DataFrame({"rrp": [10.0, 20.0]})
     predicted = reconstruct_price_forecast(
-        frame, np.array([[1.0], [2.0]]), ExperimentConfig(target_type="change")
+        frame, np.array([[1.0], [2.0]]), ExperimentConfig(target_type="change", forecast_mode="single")
     )
     np.testing.assert_array_equal(predicted, [11.0, 22.0])
     result = evaluate(

@@ -34,8 +34,6 @@ from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
     region="VIC1",
-    horizon_minutes=30,
-    forecast_mode="multioutput",  # "multioutput" predicts 5, 10, ..., 60 minutes.
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -152,28 +150,14 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "weight_decay": [0.0001],
             "batch_size": [512],
             "prediction_batch_size": [2048],
-            "max_epochs": [10],
-            "patience": [2],
+            "max_epochs": [20],
+            "patience": [5],
             "min_delta": [0.001],
-            "loss": ["huber"],
-            "huber_delta": [1.0],
+            "loss": ["mae"],
             "device": [None],
         },    
     )
 ]
-
-# Graph-embedding features each model trains on. Unlisted models use
-# EXPERIMENT.graph_embedding, which is None unless set above.
-MODEL_GRAPH_EMBEDDING: dict[type[Model], GraphEmbeddingConfig | None] = {
-    # Same encoder without cross-region edges.
-    XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),
-    LSTMModel: GraphEmbeddingConfig(),
-}
-GRAPH_EMBEDDING_CHOICES: dict[str, GraphEmbeddingConfig | None] = {
-    "none": None,
-    "nem": GraphEmbeddingConfig(),
-    "identity": GraphEmbeddingConfig(adjacency_mode="identity"),
-}
 
 # Wider grids used instead of the registry entry when --sweep is passed.
 SWEEP_GRIDS: dict[type[Model], dict[str, Sequence]] = {
@@ -239,11 +223,6 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         default=EXPERIMENT.selection_metric,
     )
     parser.add_argument("--seed", type=int, default=EXPERIMENT.random_seed)
-    parser.add_argument("--forecast-mode", choices=["single", "multioutput"],
-                        default=EXPERIMENT.forecast_mode,
-                        help="One configured target, or twelve outputs at 5-minute intervals through 60 minutes.")
-    parser.add_argument("--horizon-minutes", type=int, default=EXPERIMENT.horizon_minutes,
-                        help="Single-target lead time; multioutput always forecasts 5 through 60 minutes.")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xpu"], default="auto",
                         help="Neural device. Auto prefers CUDA, then Intel XPU, then CPU.")
     parser.add_argument("--epochs", type=int, help="Override the neural epoch limit in the model grids.")
@@ -271,17 +250,6 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         help="Rebuild prepared data from ingestion/cache",
     )
     parser.add_argument(
-        "--graph-embedding",
-        nargs="?",
-        choices=["per-model", *GRAPH_EMBEDDING_CHOICES],
-        default="per-model",
-        const="nem",
-        help=(
-            "Graph-encoder features: per-model uses MODEL_GRAPH_EMBEDDING; "
-            "none, nem (the bare flag) or identity apply to every model."
-        ),
-    )
-    parser.add_argument(
         "--sweep",
         action="store_true",
         help="Use the wider SWEEP_GRIDS entry for models that have one.",
@@ -293,9 +261,9 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--shap-3d requires --plot or --save")
     if args.shap_top_features < 0:
         parser.error("--shap-top-features must be zero (all features) or positive")
-    if min(args.shap_samples, args.shap_draws, args.horizon_minutes) < 1 or (args.epochs is not None and args.epochs < 1):
-        parser.error("Horizons, epochs and attribution counts must be positive")
-    horizons = HOUR_HORIZONS if args.forecast_mode == "multioutput" else (args.horizon_minutes,)
+    if min(args.shap_samples, args.shap_draws) < 1 or (args.epochs is not None and args.epochs < 1):
+        parser.error("Epochs and attribution counts must be positive")
+    horizons = HOUR_HORIZONS
     if args.shap_horizons and not set(args.shap_horizons).issubset(horizons):
         parser.error(f"--shap-horizons must select forecast outputs from {horizons}")
     return args
@@ -424,15 +392,15 @@ def main(
 
     Temporal representation choices live in model_data; model-specific network
     and fitting details stay behind the common model interface.
-    Models sharing a graph embedding reuse one prepared experiment; all groups
-    must score identical test origins. Explicit CLI embedding choices override
-    the per-model defaults from MODEL_GRAPH_EMBEDDING.
+    All models use the shared graph-enriched features by default. The optional
+    graph_embeddings mapping is reserved for programmatic ablation studies;
+    variants must score identical test origins.
     """
     config = config or EXPERIMENT
     if shap_horizons and not set(shap_horizons).issubset(config.horizons):
         raise ValueError(f"Attribution horizons must be selected from {config.horizons}")
     if graph_embeddings is None:
-        graph_embeddings = MODEL_GRAPH_EMBEDDING
+        graph_embeddings = {}
     groups: dict[GraphEmbeddingConfig | None, list] = {}
     for entry in select_model_registry(selected_models):
         embedding = graph_embeddings.get(entry[0], config.graph_embedding)
@@ -557,11 +525,6 @@ def run_cli(arguments: Sequence[str] | None = None) -> None:
             walk_forward_folds=cli_args.folds,
             selection_metric=cli_args.metric,
             random_seed=cli_args.seed,
-            horizon_minutes=cli_args.horizon_minutes,
-            forecast_mode=cli_args.forecast_mode,
-            graph_embedding=GRAPH_EMBEDDING_CHOICES.get(
-                cli_args.graph_embedding, EXPERIMENT.graph_embedding
-            ),
         ),
         output_directory=cli_args.output_dir,
         save_results=cli_args.save,
@@ -577,7 +540,6 @@ def run_cli(arguments: Sequence[str] | None = None) -> None:
         plot_results=cli_args.plot,
         plot_details=cli_args.plot_details,
         verbose=cli_args.verbose,
-        graph_embeddings=None if cli_args.graph_embedding == "per-model" else {},
         sweep=cli_args.sweep,
     )
 

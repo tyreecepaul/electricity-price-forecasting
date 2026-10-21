@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,7 +82,6 @@ def test_cli_selects_tcn_with_the_initial_comparison_window():
     assert grid["channels"] == [16]
     assert grid["kernel_size"] == [3]
     assert grid["num_blocks"] == [2]
-    assert all(len(values) == 1 for values in grid.values())
     assert module.parse_args(["--models", "tcn"]).models == ["tcn"]
 
 
@@ -112,32 +112,39 @@ def test_cli_parses_multiple_models():
     assert args.models == ["mlp", "gru", "xgboost"]
 
 
-def test_cli_graph_embedding_choices():
+def test_standard_defaults_include_graph_features_and_all_horizons():
     module = load_main_module()
+    from pipeline.experiment_pipeline import ExperimentConfig, HOUR_HORIZONS
 
-    assert module.parse_args([]).graph_embedding == "per-model"
-    assert module.parse_args(["--graph-embedding"]).graph_embedding == "nem"
-    assert module.parse_args(["--graph-embedding", "none"]).graph_embedding == "none"
-    assert module.parse_args(["--graph-embedding", "--models", "lstm"]).models == ["lstm"]
-    assert module.EXPERIMENT.graph_embedding is None
-    assert module.GRAPH_EMBEDDING_CHOICES["none"] is None
-    assert module.GRAPH_EMBEDDING_CHOICES["nem"].adjacency_mode == "nem"
-    assert module.GRAPH_EMBEDDING_CHOICES["identity"].adjacency_mode == "identity"
+    for config in (ExperimentConfig(), module.EXPERIMENT):
+        assert config.forecast_horizons == HOUR_HORIZONS
+        assert config.graph_embedding.adjacency_mode == "nem"
 
 
-def test_each_model_is_assigned_its_graph_embedding():
+def test_cli_has_no_forecast_or_graph_feature_switches():
+    import pytest
     module = load_main_module()
-    assigned = {
-        factory.model_name: embedding
-        for factory, embedding in module.MODEL_GRAPH_EMBEDDING.items()
-    }
-
-    assert assigned["XGBoost"].adjacency_mode == "identity"
-    assert assigned["LSTM"].adjacency_mode == "nem"
-    assert "GRU" not in assigned
+    for arguments in (["--graph-embedding", "none"], ["--forecast-mode", "single"],
+                      ["--horizon-minutes", "30"]):
+        with pytest.raises(SystemExit):
+            module.parse_args(arguments)
+    assert module.parse_args(["--shap-horizons", "5", "60"]).shap_horizons == [5, 60]
 
 
-def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
+def test_cli_passes_standard_defaults_to_the_runner(monkeypatch):
+    module = load_main_module()
+    calls = []
+    monkeypatch.setattr(module, "main", lambda models, **kwargs: calls.append((models, kwargs)))
+    module.run_cli(["--models", "tcn", "--device", "xpu"])
+    models, options = calls[0]
+    assert models == ["tcn"]
+    assert options["config"].forecast_horizons == tuple(range(5, 61, 5))
+    assert options["config"].graph_embedding.adjacency_mode == "nem"
+    assert options["device"] == "xpu"
+    assert "graph_embeddings" not in options
+
+
+def run_fake_models(module, monkeypatch, *, test_rows=None, ablation_variants=False, **arguments):
     """Run ``main`` with stub models and report what each one was given."""
 
     def fake_model(name):
@@ -153,7 +160,7 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
         return Fake
 
     first, second, third = (fake_model(name) for name in ("First", "Second", "Third"))
-    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
+    nem = module.EXPERIMENT.graph_embedding
     prepared_configs, searches = [], []
 
     def fake_prepare(config):
@@ -173,7 +180,6 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
 
     registry = [(first, {"depth": [1]}), (second, {"depth": [1]}), (third, {"depth": [1]})]
     monkeypatch.setattr(module, "MODEL_REGISTRY", registry)
-    monkeypatch.setattr(module, "MODEL_GRAPH_EMBEDDING", {first: nem, third: nem})
     monkeypatch.setattr(module, "SWEEP_GRIDS", {second: {"depth": [1, 2]}})
     monkeypatch.setattr(module, "prepare_experiment", fake_prepare)
     monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
@@ -189,6 +195,8 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
     )
     monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
 
+    if ablation_variants:
+        arguments["graph_embeddings"] = {second: None}
     module.main(save_results=False, **arguments)
     return nem, prepared_configs, searches
 
@@ -198,18 +206,20 @@ def test_models_sharing_an_embedding_share_one_prepared_experiment(monkeypatch):
 
     nem, prepared, searches = run_fake_models(module, monkeypatch)
 
-    assert prepared == [nem, None]
+    assert prepared == [nem]
     assert [(name, embedding) for name, embedding, _ in searches] == [
         ("First", nem),
+        ("Second", nem),
         ("Third", nem),
-        ("Second", None),
     ]
 
 
-def test_explicit_embedding_overrides_the_per_model_map(monkeypatch):
+def test_programmatic_ablation_can_disable_graph_features(monkeypatch):
     module = load_main_module()
 
-    _, prepared, searches = run_fake_models(module, monkeypatch, graph_embeddings={})
+    _, prepared, searches = run_fake_models(
+        module, monkeypatch, config=replace(module.EXPERIMENT, graph_embedding=None)
+    )
 
     assert prepared == [None]
     assert [name for name, _, _ in searches] == ["First", "Second", "Third"]
@@ -239,10 +249,11 @@ def test_embedding_variants_must_score_the_same_test_rows(monkeypatch):
     import pytest
 
     module = load_main_module()
-    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
+    nem = module.EXPERIMENT.graph_embedding
 
     with pytest.raises(RuntimeError, match="different test rows"):
-        run_fake_models(module, monkeypatch, test_rows={nem: 2, None: 3})
+        run_fake_models(module, monkeypatch, test_rows={nem: 2, None: 3},
+                        ablation_variants=True)
 
 
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):

@@ -268,6 +268,7 @@ def test_experiment_uses_the_reliability_features_only_when_asked(
         experiment_pipeline, "load_prepared_data", lambda config, **_: prepared
     )
     config = ExperimentConfig(
+        forecast_mode="single",
         region="VIC1",
         horizon_minutes=5,
         validation_fraction=0.2,

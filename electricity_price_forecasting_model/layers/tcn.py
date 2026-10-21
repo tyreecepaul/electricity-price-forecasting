@@ -96,6 +96,12 @@ class TCNNetwork(nn.Module):
         """Return features shaped (batch, channels, time)"""
         if inputs.ndim != 3 or inputs.shape[-1] != self.input_size:
             raise ValueError("Expected (batch, time, input_size)")
+        # Attribution batches can be views starting at an unaligned storage
+        # offset. The residual 1x1 convolution sees that view without padding,
+        # so give oneDNN an aligned allocation while preserving autograd.
+        # contiguous() alone can return the same unaligned contiguous view.
+        if inputs.device.type == "xpu" and inputs.data_ptr() % 64:
+            inputs = inputs.clone(memory_format=torch.contiguous_format)
         channels_first: torch.Tensor = inputs.transpose(1,2)
         return self.blocks(channels_first)
     

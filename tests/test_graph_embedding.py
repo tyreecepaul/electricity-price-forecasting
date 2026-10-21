@@ -270,6 +270,7 @@ def test_stage_adds_features_without_changing_scored_rows():
     assert staged.X_test[staged.embedding_columns].notna().all().all()
 
     config = ExperimentConfig(
+        forecast_mode="single",
         region="VIC1",
         horizon_minutes=HORIZON,
         validation_fraction=0.2,
@@ -294,6 +295,7 @@ def test_stage_adds_features_without_changing_scored_rows():
 def test_validation_overlapping_the_encoder_fit_is_rejected():
     staged = prepared_data(lambda train, test: embed(train, test))
     config = ExperimentConfig(
+        forecast_mode="single",
         region="VIC1",
         horizon_minutes=HORIZON,
         validation_fraction=0.2,
@@ -313,11 +315,50 @@ def test_validation_overlapping_the_encoder_fit_is_rejected():
         check_embedding_precedes_validation(two_folds)
 
 
+def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypatch, tmp_path):
+    import pipeline.experiment_pipeline as pipeline
+    import pipeline.graph_embedding.embedder as encoder
+
+    train, test = split(raw_frame())
+    calls = []
+
+    def prepare_local(**kwargs):
+        return prepare_model_data(**kwargs, train_data=train, test_data=test)
+
+    def small_encoder(train_features, test_features, **kwargs):
+        calls.append((kwargs["horizon"], kwargs["config"].adjacency_mode))
+        kwargs["config"] = replace(EMBEDDING, max_epochs=1)
+        return compute_graph_embeddings(train_features, test_features, **kwargs)
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", prepare_local)
+    monkeypatch.setattr(encoder, "compute_graph_embeddings", small_encoder)
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+                              feature_config=FEATURE_CONFIG, validation_fraction=0.2)
+    experiment = pipeline.prepare_experiment(config)
+
+    assert calls == [(60, "nem")]
+    assert experiment.config.horizon_minutes == 60
+    assert experiment.prepared.y_train.shape[1] == 12
+    assert experiment.prepared.y_test.shape[1] == 12
+    assert set(EMBEDDING.embedding_columns) <= set(experiment.features)
+    assert all(not name.startswith("target") for name in experiment.features)
+    model = GRUModel(sequence_length=3, hidden_size=4, max_epochs=1,
+                     batch_size=16, device="cpu")
+    model.train(*final_training_data(model, experiment.prepared))
+    predictions = predict_test(model, experiment.prepared)
+    assert predictions.shape == experiment.prepared.y_test.shape
+    assert np.isfinite(predictions).all()
+
+    cached = pipeline.prepare_experiment(config)
+    assert calls == [(60, "nem")]
+    pd.testing.assert_frame_equal(cached.prepared.X_test, experiment.prepared.X_test)
+
+
 def test_cache_identity_changes_only_when_the_stage_is_enabled(monkeypatch):
     import pipeline.experiment_pipeline as module
 
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source")
-    plain = ExperimentConfig(region="VIC1")
+    plain = ExperimentConfig(region="VIC1", graph_embedding=None)
     staged = replace(plain, graph_embedding=EMBEDDING)
     control = replace(
         plain, graph_embedding=replace(EMBEDDING, adjacency_mode="identity")

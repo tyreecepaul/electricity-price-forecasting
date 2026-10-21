@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import inspect
+import warnings
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -102,6 +103,29 @@ def test_tcn_temporal_features_are_causal():
 
     torch.testing.assert_close(original_prefix, changed_prefix)
     torch.testing.assert_close(original_prefix, truncated_prefix)
+
+
+@pytest.mark.parametrize("device", ["cpu", "xpu"])
+def test_tcn_offset_batches_preserve_predictions_and_input_gradients(device):
+    if device == "xpu" and not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+        pytest.skip("XPU is unavailable")
+    network = load_network_type()(input_size=7, channels=16).to(device).eval()
+    storage = torch.randn(4, 12, 7, device=device)
+    # Offset by one float: contiguous, but not 64-byte aligned.
+    flat = torch.randn(1 + storage.numel(), device=device)
+    inputs = flat[1:].view_as(storage).detach().requires_grad_(True)
+    reference = inputs.detach().clone().requires_grad_(True)
+    assert inputs.is_contiguous() and inputs.data_ptr() % 64 != 0
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Tensor is not 64-byte aligned.*")
+        actual = network(inputs)
+        expected = network(reference)
+        actual_grad = torch.autograd.grad(actual.sum(), inputs)[0]
+        expected_grad = torch.autograd.grad(expected.sum(), reference)[0]
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual_grad, expected_grad)
 
 
 def test_tcn_model_exposes_the_shared_sequence_contract():

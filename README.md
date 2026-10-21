@@ -28,13 +28,12 @@ python -m pytest -q
 Configure the experiment and model grid in `main.py`:
 
 ```bash
-# One target (30 minutes here), or the complete 5-to-60-minute curve.
-python main.py --models mlp gru lstm tcn transformer --forecast-mode single --horizon-minutes 30
-python main.py --models mlp gru lstm tcn transformer --forecast-mode multioutput --device xpu
-python main.py --models xgboost arima --forecast-mode multioutput
+# All runs forecast the complete 5-to-60-minute curve with GNN features.
+python main.py --models mlp gru lstm tcn transformer --device xpu
+python main.py --models xgboost arima
 ```
 
-In multioutput mode, deep models use a 12-value output head, XGBoost fits one
+By default, deep models use a 12-value output head, XGBoost fits one
 horizon-conditioned model, and ARIMA projects one fitted price model across the
 12 leads. Targets are matched by timestamp and the 60-minute embargo applies
 to the complete vector. All models score the same complete forecast origins.
@@ -42,8 +41,6 @@ to the complete vector. All models score the same complete forecast origins.
 ```python
 EXPERIMENT = ExperimentConfig(
     region="NSW1",
-    horizon_minutes=30,
-    forecast_mode="single",  # Or "multioutput" for all twelve 5-to-60-minute leads.
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -275,30 +272,19 @@ python main.py --models mlp gru lstm xgboost
 
 ### Graph embedding features
 
-The models above see one region at a time. An optional preprocessing stage
+The models above forecast one region at a time. A shared preprocessing stage
 adds what the other regions are doing: a graph encoder is trained on all five
 NEM regions (nodes) linked by the interconnectors (edges), and its per-region
 embedding is appended to the prepared data as `gnn_emb_00`, `gnn_emb_01`, ...
 Every registered model then trains on those columns like any other feature.
 
-Which embedding a model trains on is set per model in `main.py`:
-
-```python
-MODEL_GRAPH_EMBEDDING = {
-    XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),  # no cross-region edges
-    LSTMModel: GraphEmbeddingConfig(),                              # full interconnector graph
-}
-```
-
-Models not listed there (GRU, MLP, TCN, Transformer) get no embedding. A run
-prepares one dataset per distinct embedding and still scores every model on
-the same test rows.
+Every model uses the full NEM graph embedding by default, alongside the other
+engineered features. A run prepares one shared dataset for all models. No
+forecast-mode or graph-embedding configuration or CLI flag is required.
 
 ```bash
-python main.py --models xgboost lstm               # the per-model map above
-python main.py --models lstm --graph-embedding none  # plain baseline for every model
-python main.py --models gru --graph-embedding        # full graph for every model
-python main.py --models gru --graph-embedding identity
+python main.py --models xgboost lstm
+python main.py --models gru tcn
 ```
 
 The encoder attends between linked regions using interconnector flow,
@@ -309,7 +295,7 @@ interconnector (`spread_loss_weight`). The encoder lives in `pipeline/graph_embe
 horizon and target and cached under `model_cache`, so experiments on different
 regions share it.
 
-In multioutput mode the encoder learns the 60-minute auxiliary target, and its
+The encoder learns the 60-minute auxiliary target, and its
 features feed the downstream model's twelve forecast outputs. `--device` applies
 to both the encoder and deep forecasters; automatic selection prefers CUDA,
 then Intel XPU, then CPU. GradientSHAP values for `gnn_emb_*` describe learned
@@ -335,7 +321,9 @@ python compare_graph_embedding.py summarise
 ```
 
 `run` trains XGBoost and LSTM unless `--models` names others, and gives every
-model in a cell that cell's arm regardless of `MODEL_GRAPH_EMBEDDING`.
+model in a cell that cell's arm through an internal programmatic override.
+Single-output experiments also remain available programmatically by explicitly
+setting `ExperimentConfig(forecast_mode="single")` for research scripts.
 
 `run` is resumable and writes ordinary run artifacts under `reports/ablation/`.
 `summarise` scores all arms on identical test rows and writes overall metrics,
@@ -351,7 +339,6 @@ embedding columns.
 
 ```bash
 python main.py --models lstm --sweep
-python main.py --models lstm --sweep --graph-embedding none
 ```
 
 Candidates are ranked on the validation period only; the test period is scored

@@ -105,6 +105,7 @@ def run(
                         horizon_minutes=horizon,
                         random_seed=seed,
                         graph_embedding=embedding,
+                        forecast_mode="single",
                     ),
                     output_directory=cell,
                     # The arm applies to every model in the cell.

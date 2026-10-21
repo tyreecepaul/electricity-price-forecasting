@@ -182,6 +182,7 @@ def test_arima_runs_through_search_and_test_prediction():
         test_data=SimpleNamespace(df=raw.iloc[split:]),
     )
     config = ExperimentConfig(
+        forecast_mode="single",
         horizon_minutes=30,
         validation_fraction=0.25,
         model_features=features,

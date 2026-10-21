@@ -100,8 +100,10 @@ class ExperimentConfig:
     random_seed: int = 42
     # Reliability features are appended after loading the shared prepared cache.
     forecast_reliability: bool = False
-    forecast_mode: Literal["single", "multioutput"] = "single"
-    graph_embedding: GraphEmbeddingConfig | None = None
+    # Standard runs predict the complete hour and include learned graph features.
+    # Explicit overrides remain available for programmatic research/ablations.
+    forecast_mode: Literal["single", "multioutput"] = "multioutput"
+    graph_embedding: GraphEmbeddingConfig | None = field(default_factory=GraphEmbeddingConfig)
 
     def __post_init__(self) -> None:
         if self.horizon_minutes <= 0:
@@ -356,7 +358,7 @@ def prepare_experiment(
     """Load prepared data and construct the model-selection split."""
     if config.forecast_horizons:
         # Use the longest lead for caching and embargoes without changing the
-        # user's configured single-target horizon or the CLI override defaults.
+        # caller's configuration object.
         features = config.feature_config
         if config.target_type == "aemo_error":
             features = replace(features, p5min_horizons_minutes=config.forecast_horizons)
