@@ -194,6 +194,82 @@ python main.py --models xgboost
 python main.py --models mlp gru lstm xgboost
 ```
 
+### Graph embedding features
+
+The models above see one region at a time. An optional preprocessing stage
+adds what the other regions are doing: a graph encoder is trained on all five
+NEM regions (nodes) linked by the interconnectors (edges), and its per-region
+embedding is appended to the prepared data as `gnn_emb_00`, `gnn_emb_01`, ...
+Every registered model then trains on those columns like any other feature.
+
+Which embedding a model trains on is set per model in `main.py`:
+
+```python
+MODEL_GRAPH_EMBEDDING = {
+    XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),  # no cross-region edges
+    LSTMModel: GraphEmbeddingConfig(),                              # full interconnector graph
+}
+```
+
+Models not listed there (GRU, MLP, TCN, Transformer) get no embedding. A run
+prepares one dataset per distinct embedding and still scores every model on
+the same test rows.
+
+```bash
+python main.py --models xgboost lstm               # the per-model map above
+python main.py --models lstm --graph-embedding none  # plain baseline for every model
+python main.py --models gru --graph-embedding        # full graph for every model
+python main.py --models gru --graph-embedding identity
+```
+
+The encoder attends between linked regions using interconnector flow,
+utilisation and headroom (`edge_features`), and is trained to forecast both
+each region's target and the future price difference across each
+interconnector (`spread_loss_weight`). The encoder lives in `pipeline/graph_embedding/`, with its layers in
+`electricity_price_forecasting_model/layers/gnn_layers/`. It is fitted once per
+horizon and target and cached under `model_cache`, so experiments on different
+regions share it.
+
+Because the encoder is trained on prices, it is fitted only on the first
+`fit_fraction` (default 0.6) of the training period and then frozen.
+Embeddings for later intervals, including every validation and test interval,
+come from an encoder that never saw their outcomes. `prepare_experiment` raises
+if a validation block would overlap the encoder's fit window; lower
+`fit_fraction` or use fewer `--folds` in that case.
+
+To measure whether the stage helps, compare arms that differ only in the
+embedding: `baseline` (none), `gnn` (interconnector graph), `no_graph` (the
+same encoder with cross-region edges removed), and `gnn_plain` /
+`no_graph_plain` (those two without edge attributes or the spread objective):
+
+```bash
+python compare_graph_embedding.py run --regions VIC1 NSW1
+python compare_graph_embedding.py summarise
+```
+
+`run` trains XGBoost and LSTM unless `--models` names others, and gives every
+model in a cell that cell's arm regardless of `MODEL_GRAPH_EMBEDDING`.
+
+`run` is resumable and writes ordinary run artifacts under `reports/ablation/`.
+`summarise` scores all arms on identical test rows and writes overall metrics,
+a day-block bootstrap interval for each MAE difference, results by price
+regime, the encoder's own validation error and XGBoost's reliance on the
+embedding columns.
+
+### Hyperparameter sweeps
+
+`SWEEP_GRIDS` in `main.py` holds wider grids than `MODEL_REGISTRY` (currently
+18 LSTM candidates over `sequence_length`, `hidden_size` and `num_layers`).
+`--sweep` uses them for the models that have one:
+
+```bash
+python main.py --models lstm --sweep
+python main.py --models lstm --sweep --graph-embedding none
+```
+
+Candidates are ranked on the validation period only; the test period is scored
+once, for the selected configuration.
+
 ### Target Types
 
 | Value | Model target | Price reconstruction |
@@ -505,6 +581,7 @@ evaluation should use reconstructed RRP forecasts against `target_rrp`.
 ├── pipeline/
 │   ├── data_cleaning/                   AEMO ingestion and raw caches
 │   ├── preprocessing/                   shared feature and sequence preparation
+│   ├── graph_embedding/                 cross-region graph encoder features
 │   ├── sequences.py                     lazy datasets for sequence models
 │   ├── evaluation.py                    common result metrics
 │   ├── experiment_pipeline.py           experiment preparation and diagnostics
@@ -512,6 +589,7 @@ evaluation should use reconstructed RRP forecasts against `target_rrp`.
 │   └── tuning.py                        hyperparameter grid search
 ├── tests/                               pipeline regression tests
 ├── main.py                              experiment entry point
+├── compare_graph_embedding.py           with/without graph-embedding comparison
 └── requirements.txt
 ```
 
