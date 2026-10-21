@@ -284,6 +284,9 @@ def main(
         # Start a fresh fit on all pre-test data, using the selected epoch budget.
         # Reusing the search model would leave out its validation-period training data.
         model: Model = model_factory(**search_result.best_config)
+        device = getattr(model, "device", "cpu")
+        using_gpu = str(device).split(":")[0] in {"cuda", "xpu"}
+        print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({device})")
         x_train, y_train = final_training_data(model, prepared)
         model.train(x_train, y_train)
 
