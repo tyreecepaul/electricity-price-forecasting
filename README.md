@@ -79,12 +79,40 @@ Edit [`main.py`](main.py):
 | --- | --- |
 | Region, target and input features | `EXPERIMENT` |
 | GNN features | `EXPERIMENT.graph_embedding`; set to `None` to disable |
-| Model hyperparameters | `MODEL_REGISTRY` |
-| Wider search grids | `SWEEP_GRIDS`, enabled with `--sweep` |
+| Model hyperparameters and search grids | `MODEL_REGISTRY` |
 
 The current experiment uses **NSW1**, price-change targets, all standard
 features plus GNN embeddings, and a 20% validation fraction. All experiments
 use the complete 12-horizon curve; there is no horizon-selection CLI flag.
+
+Set `EXPERIMENT.region` to one of these NEM region codes:
+
+| Code | State |
+| --- | --- |
+| `NSW1` | New South Wales |
+| `QLD1` | Queensland |
+| `VIC1` | Victoria |
+| `SA1` | South Australia |
+| `TAS1` | Tasmania |
+
+For example, forecast Victoria by changing the configuration in `main.py`:
+
+```python
+EXPERIMENT = ExperimentConfig(
+    region="VIC1",
+    target_type="change",        # "change", "price" or "aemo_error"
+    model_features="all",        # Or a list of feature column names
+    validation_fraction=0.20,     # Fraction of training rows used for validation
+)
+```
+
+Each run forecasts one region; enabled GNN features still use the other NEM
+regions as context. Add `graph_embedding=None` to disable those features.
+Validation fractions must be strictly between 0 and 1.
+
+Tuning always uses `MODEL_REGISTRY`: one value fixes a parameter, while multiple
+values search all combinations. For example, `"hidden_size": [16, 32, 64]`
+compares three sizes without an extra command-line flag.
 
 Use `--device cpu|cuda|xpu|auto` to select the device for the GNN encoder and
 deep models. Automatic selection prefers CUDA, then XPU, then CPU.

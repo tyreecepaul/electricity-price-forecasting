@@ -120,11 +120,11 @@ def test_standard_defaults_include_graph_features_and_all_horizons():
         assert config.graph_embedding.adjacency_mode == "nem"
 
 
-def test_cli_has_no_forecast_or_graph_feature_switches():
+def test_cli_rejects_removed_configuration_switches():
     import pytest
     module = load_main_module()
     for arguments in (["--graph-embedding", "none"], ["--forecast-mode", "single"],
-                      ["--horizon-minutes", "30"]):
+                      ["--horizon-minutes", "30"], ["--sweep"]):
         with pytest.raises(SystemExit):
             module.parse_args(arguments)
     assert module.parse_args(["--shap-horizons", "5", "60"]).shap_horizons == [5, 60]
@@ -177,9 +177,8 @@ def run_fake_models(module, monkeypatch, **arguments):
         searches.append((factory.model_name, experiment.config.graph_embedding, grid))
         return SimpleNamespace(best_config={"depth": 1})
 
-    registry = [(first, {"depth": [1]}), (second, {"depth": [1]}), (third, {"depth": [1]})]
+    registry = [(first, {"depth": [1]}), (second, {"depth": [1, 2]}), (third, {"depth": [1]})]
     monkeypatch.setattr(module, "MODEL_REGISTRY", registry)
-    monkeypatch.setattr(module, "SWEEP_GRIDS", {second: {"depth": [1, 2]}})
     monkeypatch.setattr(module, "prepare_experiment", fake_prepare)
     monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
@@ -223,10 +222,10 @@ def test_graph_features_can_be_disabled_only_through_experiment_config(monkeypat
     assert all(embedding is None for _, embedding, _ in searches)
 
 
-def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
+def test_main_passes_each_registry_grid_to_tuning(monkeypatch):
     module = load_main_module()
 
-    _, _, searches = run_fake_models(module, monkeypatch, sweep=True)
+    _, _, searches = run_fake_models(module, monkeypatch)
     grids = {name: grid for name, _, grid in searches}
 
     assert grids == {
@@ -234,13 +233,6 @@ def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
         "Second": {"depth": [1, 2]},
         "Third": {"depth": [1]},
     }
-    lstm = next(f for f, _ in load_main_module().MODEL_REGISTRY if f.model_name == "LSTM")
-    registry_grid = next(g for f, g in load_main_module().MODEL_REGISTRY if f is lstm)
-    sweep_grid = next(
-        g for f, g in load_main_module().SWEEP_GRIDS.items() if f.model_name == "LSTM"
-    )
-    assert set(sweep_grid) >= set(registry_grid)
-    assert len(sweep_grid["sequence_length"]) > 1 and len(sweep_grid["hidden_size"]) > 1
 
 
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):

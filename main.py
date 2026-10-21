@@ -155,26 +155,6 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     )
 ]
 
-# Wider grids used instead of the registry entry when --sweep is passed.
-SWEEP_GRIDS: dict[type[Model], dict[str, Sequence]] = {
-    LSTMModel: {
-        "sequence_length": [12, 24, 36],
-        "hidden_size": [16, 32, 64],
-        "num_layers": [1, 2],
-        "dropout": [0.0],
-        "learning_rate": [0.001],
-        "weight_decay": [0.0001],
-        "batch_size": [512],
-        "prediction_batch_size": [2048],
-        "max_epochs": [20],
-        "patience": [3],
-        "min_delta": [0.001],
-        "loss": ["huber"],
-        "huber_delta": [1.0],
-        "gradient_clip_norm": [1.0],
-    },
-}
-
 
 def model_cli_name(model_factory: type[Model]) -> str:
     """Return the stable command-line name for a registered model."""
@@ -244,11 +224,6 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         "--refresh",
         action="store_true",
         help="Rebuild prepared data from ingestion/cache",
-    )
-    parser.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Use the wider SWEEP_GRIDS entry for models that have one.",
     )
     args = parser.parse_args(arguments)
     if args.plot_details and not (args.plot or args.save):
@@ -381,7 +356,6 @@ def main(
     plot_results=False,
     plot_details=False,
     verbose=False,
-    sweep=False,
 ) -> None:
     """Prepare shared data, select/refit each model, then score the held-out test.
 
@@ -414,8 +388,6 @@ def main(
 
     for model_factory, hyperparam_grid in entries:
         print(f"=== {model_factory.model_name} ===")
-        if sweep:
-            hyperparam_grid = SWEEP_GRIDS.get(model_factory, hyperparam_grid)
         hyperparam_grid = dict(hyperparam_grid)
         if issubclass(model_factory, TorchForecastModel):
             if device is not None:
@@ -507,7 +479,6 @@ def run_cli(arguments: Sequence[str] | None = None) -> None:
         plot_results=cli_args.plot,
         plot_details=cli_args.plot_details,
         verbose=cli_args.verbose,
-        sweep=cli_args.sweep,
     )
 
 

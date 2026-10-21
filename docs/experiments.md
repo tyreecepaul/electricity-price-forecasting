@@ -4,7 +4,7 @@
 
 ## Configure a run
 
-`main.py` owns the active `EXPERIMENT`, `MODEL_REGISTRY` and `SWEEP_GRIDS`.
+`main.py` owns the active `EXPERIMENT` and `MODEL_REGISTRY`.
 Change the region or disable GNN features by editing the experiment:
 
 ```python
@@ -20,6 +20,10 @@ EXPERIMENT = ExperimentConfig(
 Omit `graph_embedding=None` to use the default NEM graph encoder. To tune it,
 import `GraphEmbeddingConfig` from `pipeline.graph_embedding` and pass a
 configured instance. GNN configuration applies to every model in a run.
+
+`region` accepts `NSW1` (New South Wales), `QLD1` (Queensland), `VIC1`
+(Victoria), `SA1` (South Australia) or `TAS1` (Tasmania). Each run selects
+one forecast region; the default GNN encoder uses all five regions as context.
 
 `model_features="all"` selects the standard engineered features. A list of
 column names selects specific inputs; enabled graph features are appended.
@@ -39,12 +43,14 @@ each lead, and `main.py` reconstructs prices before evaluation:
 ```bash
 # With graph_embedding=None in EXPERIMENT, as in the example above
 python main.py --models gru --folds 3 --metric rmse --seed 42 --skip-shap
-python main.py --models lstm --sweep --skip-shap
+python main.py --models lstm --skip-shap
 ```
 
-Registry grids use sequences of values; tuning evaluates their Cartesian
-product. `--sweep` substitutes a wider grid only for models with a
-`SWEEP_GRIDS` entry. Start with a small grid when checking a new model.
+Registry grids use sequences of values; every run evaluates their Cartesian
+product. One value fixes a parameter; multiple values compare alternatives.
+Edit the grid directly in `MODEL_REGISTRY`, for example setting an LSTM entry's
+`"hidden_size": [16, 32, 64]` to compare three sizes. No extra flag is needed.
+Start with a small grid when checking a new model.
 
 One fold uses a chronological fit/validation holdout. Additional folds use
 expanding training windows and disjoint validation blocks. Labels are
