@@ -71,4 +71,4 @@ class MLPModel(TorchForecastModel):
         )
 
     def _build_network(self, input_size: int) -> nn.Module:
-        return FeedForwardNetwork(input_size, self.hidden_sizes, self.dropout)
+        return FeedForwardNetwork(input_size, self.hidden_sizes, self.dropout, output_size=self.output_size)
