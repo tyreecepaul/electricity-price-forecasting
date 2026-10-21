@@ -100,21 +100,21 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
     (
         TransformerModel,
         {
-            "sequence_length": [36],
-            "d_model": [32],
-            "nhead": [8],
-            "num_layers": [6],
-            "dim_feedforward": [64],
-            "dropout": [0.0],
-            "learning_rate": [0.001],
+            "sequence_length": [72], #72
+            "d_model": [64],# 32
+            "nhead": [4], #8
+            "num_layers": [3], #6
+            "dim_feedforward": [128],#64
+            "dropout": [0.0], #0.1
+            "learning_rate": [0.001], #test weight decay next
             "weight_decay": [0.0001],
-            "batch_size": [128],
+            "batch_size": [128], #64
             "prediction_batch_size": [256],
-            "max_epochs": [20],
-            "patience": [3],
+            "max_epochs": [50],
+            "patience": [10],
             "min_delta": [0.001],
-            "loss": ["mse", "huber"],
-            "huber_delta": [1.0],
+            "loss": ["huber"],
+            "huber_delta": [0.5],
         },
     ),
     (
@@ -422,7 +422,8 @@ def main(
                 inputs, x_train, history=history, positions=positions,
                 sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
             )
-            print(f"Observations={len(attribution)}, references={attribution.attrs['baseline_count']}, "
+            print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
+                  f"references={attribution.attrs['baseline_count']}, "
                   f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
             importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
                 "mean_absolute_contribution"
@@ -452,6 +453,9 @@ def main(
             # Start a fresh fit on all pre-test data, using the selected epoch budget.
             # Reusing the search model would leave out its validation-period training data.
             model: Model = model_factory(**search_result.best_config)
+            device = getattr(model, "device", "cpu")
+            using_gpu = str(device).split(":")[0] in {"cuda", "xpu"}
+            print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({device})")
             x_train, y_train = final_training_data(model, prepared)
             model.train(x_train, y_train)
 
