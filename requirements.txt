@@ -5,6 +5,8 @@ numpy
 scikit-learn
 xgboost
 torch
+captum
+statsmodels
 tqdm
 joblib
 pytest

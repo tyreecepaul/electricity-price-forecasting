@@ -11,7 +11,7 @@ from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.lstm import LSTMModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.final_model.tcn import TCNModel
-from electricity_price_forecasting_model.final_model.late_fusion import LateFusionModel
+from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
 from pipeline.evaluation import ModelResult, evaluate, print_evaluation_summary
@@ -156,29 +156,6 @@ MODEL_REGISTRY: list[tuple[type[Model], dict[str, Sequence]]] = [
             "device": [None],
         },    
     ),
-    (
-        LateFusionModel,
-        {
-            "sequence_length": [24],
-            "channels": [32],
-            "kernel_size": [3],
-            "num_blocks": [3],
-            "d_model": [32],
-            "nhead": [4],
-            "num_decoder_layers": [1],
-            "dim_feedforward": [64],
-            "dropout": [0.1],
-            "learning_rate": [0.001],
-            "weight_decay": [0.0001],
-            "batch_size": [256],
-            "prediction_batch_size": [1024],
-            "max_epochs": [20],
-            "patience": [3],
-            "min_delta": [0.001],
-            "loss": ["huber"],
-            "huber_delta": [1.0],
-        },
-    ),
 ]
 
 # Graph-embedding features each model trains on. Unlisted models use
@@ -187,8 +164,6 @@ MODEL_GRAPH_EMBEDDING: dict[type[Model], GraphEmbeddingConfig | None] = {
     # Same encoder without cross-region edges.
     XGBoostModel: GraphEmbeddingConfig(adjacency_mode="identity"),
     LSTMModel: GraphEmbeddingConfig(),
-    # The spatial branch reads gnn_emb_* columns; without them it is skipped.
-    LateFusionModel: GraphEmbeddingConfig(),
 }
 GRAPH_EMBEDDING_CHOICES: dict[str, GraphEmbeddingConfig | None] = {
     "none": None,
@@ -212,27 +187,7 @@ SWEEP_GRIDS: dict[type[Model], dict[str, Sequence]] = {
         "min_delta": [0.001],
         "loss": ["huber"],
         "huber_delta": [1.0],
-    },
-    # The registry grid selects epoch 1, so search gentler optimisation first.
-    LateFusionModel: {
-        "sequence_length": [12, 24],
-        "channels": [32],
-        "kernel_size": [3],
-        "num_blocks": [3],
-        "d_model": [32],
-        "nhead": [4],
-        "num_decoder_layers": [1],
-        "dim_feedforward": [64],
-        "dropout": [0.1, 0.2],
-        "learning_rate": [0.001, 0.0003, 0.0001],
-        "weight_decay": [0.0001],
-        "batch_size": [256],
-        "prediction_batch_size": [1024],
-        "max_epochs": [20],
-        "patience": [3],
-        "min_delta": [0.001],
-        "loss": ["huber"],
-        "huber_delta": [1.0],
+        "gradient_clip_norm": [1.0],
     },
 }
 
@@ -410,45 +365,6 @@ def main(
             search_result: SearchResult = search_hyperparameters(
                 model_factory, hyperparam_grid, experiment
             )
-        if isinstance(model, TorchForecastModel):
-            sample_size, baseline_size, n_samples = 1024, 256, 2048
-            print(f"GradientShap: target={config.target_type}, samples<={sample_size}, "
-                  f"references<={baseline_size}, draws={n_samples}, seed={model.random_seed}")
-            frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
-            inputs = indexed_features(frame, prepared.features)
-            history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
-            positions = inputs.index.get_indexer(indexed_features(prepared.test_df, prepared.features).index)
-            attribution = model.gradient_shap(
-                inputs, x_train, history=history, positions=positions,
-                sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
-            )
-            print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
-                  f"references={attribution.attrs['baseline_count']}, "
-                  f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
-            importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
-                "mean_absolute_contribution"
-            )
-            feature_scope = "all timesteps" if model.requires_sequence else "single input row"
-            print(f"Top 10 features ($/MWh; {feature_scope}):")
-            print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
-            residual = np.abs(attribution.attrs["completeness_residual"])
-            print(f"Attribution residual ($/MWh): mean absolute={residual.mean():.4f}, "
-                  f"max absolute={residual.max():.4f}")
-            if model.requires_sequence:
-                timestep_summary = sequence_attribution_summary(
-                    attribution.attrs["lag_attributions"], model.interval_minutes,
-                )
-                print("Timestep importance ($/MWh; all features; lag 0 = latest input):")
-                print(timestep_summary.to_string(float_format=lambda x: f"{x:.3f}"))
-            if run_directory is not None:
-                path = run_directory / model_cli_name(model_factory)
-                attribution.assign(
-                    completeness_residual=attribution.attrs["completeness_residual"],
-                ).to_csv(path / "gradient_shap.csv")
-                importance.to_csv(path / "feature_importance.csv", index_label="feature")
-                if model.requires_sequence:
-                    attribution.attrs["lag_attributions"].to_csv(path / "gradient_shap_by_lag.csv")
-                    timestep_summary.to_csv(path / "gradient_shap_timestep_summary.csv")
 
             # Start a fresh fit on all pre-test data, using the selected epoch budget.
             # Reusing the search model would leave out its validation-period training data.
@@ -481,6 +397,46 @@ def main(
                     prepared=prepared,
                     graph_embedding=embedding,
                 )
+
+            if isinstance(model, TorchForecastModel):
+                sample_size, baseline_size, n_samples = 1024, 256, 2048
+                print(f"GradientShap: target={config.target_type}, samples<={sample_size}, "
+                      f"references<={baseline_size}, draws={n_samples}, seed={model.random_seed}")
+                frame = prepared.test_timeline if model.requires_sequence else prepared.test_df
+                inputs = indexed_features(frame, prepared.features)
+                history = indexed_features(prepared.train_timeline, prepared.features) if model.requires_sequence else None
+                positions = inputs.index.get_indexer(indexed_features(prepared.test_df, prepared.features).index)
+                attribution = model.gradient_shap(
+                    inputs, x_train, history=history, positions=positions,
+                    sample_size=sample_size, baseline_size=baseline_size, n_samples=n_samples,
+                )
+                print(f"Observations={len(attribution)}, device={attribution.attrs['device']}, "
+                      f"references={attribution.attrs['baseline_count']}, "
+                      f"reference mean={attribution.attrs['reference_prediction']:.3f} $/MWh")
+                importance = attribution.attrs["absolute_contributions"].mean().sort_values(ascending=False).rename(
+                    "mean_absolute_contribution"
+                )
+                feature_scope = "all timesteps" if model.requires_sequence else "single input row"
+                print(f"Top 10 features ($/MWh; {feature_scope}):")
+                print(importance.to_frame().join(attribution.mean().rename("mean_signed_contribution")).head(10).to_string(float_format=lambda x: f"{x:.3f}"))
+                residual = np.abs(attribution.attrs["completeness_residual"])
+                print(f"Attribution residual ($/MWh): mean absolute={residual.mean():.4f}, "
+                      f"max absolute={residual.max():.4f}")
+                if model.requires_sequence:
+                    timestep_summary = sequence_attribution_summary(
+                        attribution.attrs["lag_attributions"], model.interval_minutes,
+                    )
+                    print("Timestep importance ($/MWh; all features; lag 0 = latest input):")
+                    print(timestep_summary.to_string(float_format=lambda x: f"{x:.3f}"))
+                if run_directory is not None:
+                    path = run_directory / model_cli_name(model_factory)
+                    attribution.assign(
+                        completeness_residual=attribution.attrs["completeness_residual"],
+                    ).to_csv(path / "gradient_shap.csv")
+                    importance.to_csv(path / "feature_importance.csv", index_label="feature")
+                    if model.requires_sequence:
+                        attribution.attrs["lag_attributions"].to_csv(path / "gradient_shap_by_lag.csv")
+                        timestep_summary.to_csv(path / "gradient_shap_timestep_summary.csv")
 
     print_evaluation_summary(results, prepared)
     if run_directory is not None:

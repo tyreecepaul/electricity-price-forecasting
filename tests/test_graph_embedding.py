@@ -308,7 +308,9 @@ def test_validation_overlapping_the_encoder_fit_is_rejected():
         check_embedding_precedes_validation(experiment)
 
     two_folds = replace(experiment, config=replace(config, walk_forward_folds=2))
-    check_embedding_precedes_validation(two_folds)
+    # This cutoff still includes outcomes after the first validation origin.
+    with pytest.raises(ValueError, match="fit_fraction"):
+        check_embedding_precedes_validation(two_folds)
 
 
 def test_cache_identity_changes_only_when_the_stage_is_enabled(monkeypatch):

@@ -31,7 +31,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from pipeline.contracts import forecast_vector
 from pipeline.graph_embedding import GraphEmbeddingConfig
-from pipeline.preprocessing import PreparedModelData, prepare_model_data
+from pipeline.preprocessing import (
+    PreparedModelData,
+    forecast_reliability_columns,
+    prepare_model_data,
+)
 from pipeline.preprocessing.adapters import LearnedFeatures
 from pipeline.preprocessing.config import FeatureConfig
 
@@ -92,6 +96,8 @@ class ExperimentConfig:
     walk_forward_folds: int = 1
     selection_metric: str = "mae"
     random_seed: int = 42
+    # Reliability features are appended after loading the shared prepared cache.
+    forecast_reliability: bool = False
     graph_embedding: GraphEmbeddingConfig | None = None
 
     def __post_init__(self) -> None:
@@ -363,11 +369,11 @@ def check_embedding_precedes_validation(experiment: ExperimentData) -> None:
         validation["settlement_date"].min()
         for _, validation in walk_forward_splits(experiment)
     )
-    # The encoder's last label belongs to the origin one horizon before fit_end.
-    last_origin = fit_end - pd.Timedelta(minutes=experiment.config.horizon_minutes)
-    if last_origin > earliest:
+    # fit_end bounds realised outcomes used for both fitting and checkpoint
+    # selection. Subtracting the horizon would allow information from validation.
+    if fit_end > earliest:
         raise ValueError(
-            f"The graph encoder learned from forecast origins up to {last_origin}, "
+            f"The graph encoder's information cutoff ({fit_end}) is "
             f"after the earliest validation block starts ({earliest}). Lower "
             "GraphEmbeddingConfig.fit_fraction or use fewer walk-forward folds."
         )

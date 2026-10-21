@@ -303,7 +303,7 @@ def test_saved_run_round_trips_model_and_context(
         "device": ["cpu"],
     }
     monkeypatch.setattr(main, "MODEL_REGISTRY", [(model_type, grid)])
-    main.main(config=experiment.config, output_directory=tmp_path)
+    main.main(config=experiment.config, output_directory=tmp_path, save_results=True)
     directory = next(tmp_path.iterdir())
     assert (directory / "experiment.json").exists()
     assert (directory / "summary.csv").exists()
