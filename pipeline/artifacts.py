@@ -12,8 +12,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import joblib
-import numpy as np
 import pandas as pd
+
+from pipeline.contracts import forecast_array
+from pipeline.experiment_pipeline import HOUR_HORIZONS
 
 
 def create_run_directory(config, output_directory: Path, prepared=None) -> Path:
@@ -48,13 +50,15 @@ def save_model_run(
     result,
     extra_columns=(),
     prepared=None,
-    graph_embedding=None,
+    *,
+    graph_embedding,
 ):
     """Save one selected model, its search results and aligned test-price forecasts.
 
     The bundle includes preprocessing and context for inference, not optimizer
     state for resuming training. Only load trusted joblib bundles.
     """
+    predictions = forecast_array(predictions, len(test_df), len(HOUR_HORIZONS))
     path = directory / model.get_model_name().lower().replace(" ", "-")
     path.mkdir(exist_ok=False)
     search_result.trials.to_csv(path / "trials.csv", index=False)
@@ -68,8 +72,7 @@ def save_model_run(
         "test_metrics": result.metrics,
         "features": getattr(model, "feature_columns", []),
         "target_columns": getattr(model, "target_columns", None),
-        # Models in one run may train on different graph-embedding features.
-        "graph_embedding": asdict(graph_embedding) if graph_embedding else None,
+        "graph_embedding": asdict(graph_embedding) if graph_embedding is not None else None,
         "graph_embedding_diagnostics": getattr(
             prepared, "embedding_diagnostics", None
         ),
@@ -94,26 +97,18 @@ def save_model_run(
             if c in test_df
         ]
     ].copy()
-    if np.asarray(predictions).ndim == 2:
-        # The same long format covers deep heads, conditioned trees and ARIMA.
-        horizons = search_result.best_config.get("forecast_horizons")
-        if not horizons:
-            horizons = tuple(int(c.removeprefix("target_h")) for c in model.target_columns)
-        parts = []
-        for position, horizon in enumerate(horizons):
-            part = rows.copy()
-            part["horizon_minutes"] = horizon
-            part["target_time"] = part["settlement_date"] + pd.Timedelta(minutes=horizon)
-            part["target_rrp"] = test_df[f"target_rrp_h{horizon:02d}"].to_numpy()
-            part["target"] = test_df[f"target_h{horizon:02d}"].to_numpy()
-            part["prediction_rrp"] = predictions[:, position]
-            part["valid"] = result.valid_mask[:, position]
-            parts.append(part)
-        rows = pd.concat(parts, ignore_index=True)
-        rows.pivot(index=["region", "settlement_date"], columns="horizon_minutes", values="prediction_rrp").to_csv(path / "forecast_curves.csv")
-    else:
-        rows["prediction_rrp"] = predictions
-        rows["valid"] = result.valid_mask
+    parts = []
+    for position, horizon in enumerate(HOUR_HORIZONS):
+        part = rows.copy()
+        part["horizon_minutes"] = horizon
+        part["target_time"] = part["settlement_date"] + pd.Timedelta(minutes=horizon)
+        part["target_rrp"] = test_df[f"target_rrp_h{horizon:02d}"].to_numpy()
+        part["target"] = test_df[f"target_h{horizon:02d}"].to_numpy()
+        part["prediction_rrp"] = predictions[:, position]
+        part["valid"] = result.valid_mask[:, position]
+        parts.append(part)
+    rows = pd.concat(parts, ignore_index=True)
+    rows.pivot(index=["region", "settlement_date"], columns="horizon_minutes", values="prediction_rrp").to_csv(path / "forecast_curves.csv")
     rows.to_csv(path / "predictions.csv", index=False)
     # Move a copy to CPU so the bundle can load without a GPU while the caller's
     # live model retains its original device and state.

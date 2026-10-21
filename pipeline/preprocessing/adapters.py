@@ -56,7 +56,7 @@ class PreparedModelData:
     target_type: str
     train_timeline: pd.DataFrame | None = None
     test_timeline: pd.DataFrame | None = None
-    # Empty preserves the original scalar contract; populated after cached preparation.
+    # Populated with twelve horizons after cached feature preparation.
     forecast_horizons: tuple[int, ...] = ()
     embedding_columns: list[str] = field(default_factory=list)
     embedding_fit_end: pd.Timestamp | None = None

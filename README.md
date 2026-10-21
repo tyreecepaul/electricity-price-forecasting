@@ -28,12 +28,12 @@ python -m pytest -q
 Configure the experiment and model grid in `main.py`:
 
 ```bash
-# All runs forecast the complete 5-to-60-minute curve with GNN features.
+# All runs forecast the complete 5-to-60-minute curve; GNN features default on.
 python main.py --models mlp gru lstm tcn transformer --device xpu
 python main.py --models xgboost arima
 ```
 
-By default, deep models use a 12-value output head, XGBoost fits one
+Deep models use a 12-value output head, XGBoost fits one
 horizon-conditioned model, and ARIMA projects one fitted price model across the
 12 leads. Targets are matched by timestamp and the 60-minute embargo applies
 to the complete vector. All models score the same complete forecast origins.
@@ -278,9 +278,17 @@ NEM regions (nodes) linked by the interconnectors (edges), and its per-region
 embedding is appended to the prepared data as `gnn_emb_00`, `gnn_emb_01`, ...
 Every registered model then trains on those columns like any other feature.
 
-Every model uses the full NEM graph embedding by default, alongside the other
-engineered features. A run prepares one shared dataset for all models. No
-forecast-mode or graph-embedding configuration or CLI flag is required.
+By default, every model uses the full NEM graph embedding alongside the other
+engineered features. A run prepares one shared dataset for all models. All runs
+use twelve outputs. To disable GNN features, set `graph_embedding=None` in the
+`ExperimentConfig` in `main.py` (or when calling `prepare_experiment`):
+
+```python
+EXPERIMENT = ExperimentConfig(region="VIC1", graph_embedding=None)
+```
+
+Omit that parameter to enable the GNN, or pass `GraphEmbeddingConfig(...)` to
+tune the encoder. This setting has no CLI switch and applies to every model.
 
 ```bash
 python main.py --models xgboost lstm
@@ -292,7 +300,7 @@ utilisation and headroom (`edge_features`), and is trained to forecast both
 each region's target and the future price difference across each
 interconnector (`spread_loss_weight`). The encoder lives in `pipeline/graph_embedding/`, with its layers in
 `electricity_price_forecasting_model/layers/gnn_layers/`. It is fitted once per
-horizon and target and cached under `model_cache`, so experiments on different
+target and cached under `model_cache`, so experiments on different
 regions share it.
 
 The encoder learns the 60-minute auxiliary target, and its
@@ -309,27 +317,6 @@ Embeddings for later intervals, including every validation and test interval,
 come from an encoder that never saw their outcomes. `prepare_experiment` raises
 if a validation block would overlap the encoder's fit window; lower
 `fit_fraction` or use fewer `--folds` in that case.
-
-To measure whether the stage helps, compare arms that differ only in the
-embedding: `baseline` (none), `gnn` (interconnector graph), `no_graph` (the
-same encoder with cross-region edges removed), and `gnn_plain` /
-`no_graph_plain` (those two without edge attributes or the spread objective):
-
-```bash
-python compare_graph_embedding.py run --regions VIC1 NSW1
-python compare_graph_embedding.py summarise
-```
-
-`run` trains XGBoost and LSTM unless `--models` names others, and gives every
-model in a cell that cell's arm through an internal programmatic override.
-Single-output experiments also remain available programmatically by explicitly
-setting `ExperimentConfig(forecast_mode="single")` for research scripts.
-
-`run` is resumable and writes ordinary run artifacts under `reports/ablation/`.
-`summarise` scores all arms on identical test rows and writes overall metrics,
-a day-block bootstrap interval for each MAE difference, results by price
-regime, the encoder's own validation error and XGBoost's reliance on the
-embedding columns.
 
 ### Hyperparameter sweeps
 
@@ -437,11 +424,11 @@ configured `target`.
 @dataclass(frozen=True)
 class ExperimentConfig:
     region: str = "NSW1"
-    horizon_minutes: int = 60
     target_type: Literal["change", "price", "aemo_error"] = "change"
     model_features: Literal["all"] | Sequence[str] = "all"
     validation_fraction: float = 0.15
     cache_directory: Path = ...
+    graph_embedding: GraphEmbeddingConfig | None = ...
 
 
 @dataclass(frozen=True)
@@ -578,13 +565,12 @@ model.
 
 #### 4. Select the shared experiment
 
-All registered models receive the same region, horizon, target, features, and
+All registered models receive the same region, twelve horizons, target, features, and
 chronological splits from `EXPERIMENT`:
 
 ```python
 EXPERIMENT = ExperimentConfig(
     region="NSW1",
-    horizon_minutes=30,
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -663,7 +649,6 @@ evaluation should use reconstructed RRP forecasts against `target_rrp`.
 │   └── tuning.py                        hyperparameter grid search
 ├── tests/                               pipeline regression tests
 ├── main.py                              experiment entry point
-├── compare_graph_embedding.py           with/without graph-embedding comparison
 └── requirements.txt
 ```
 

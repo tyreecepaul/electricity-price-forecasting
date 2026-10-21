@@ -42,7 +42,7 @@ from pipeline.preprocessing.config import FeatureConfig
 
 TargetType = Literal["change", "price", "aemo_error"]
 FeatureSelection = Literal["all"] | Sequence[str]
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 HOUR_HORIZONS = tuple(range(5, 61, 5))
 
 
@@ -70,11 +70,7 @@ def source_fingerprint() -> str:
 
 
 def graph_source_fingerprint() -> str:
-    """Fingerprint the graph-encoder code, used only when the stage is enabled.
-
-    Kept apart from ``source_fingerprint`` so editing the encoder does not
-    invalidate prepared data for experiments that never use it.
-    """
+    """Fingerprint the graph-encoder code when graph features are enabled."""
     digest = hashlib.sha256()
     layers = PROJECT_ROOT / "electricity_price_forecasting_model" / "layers" / "gnn_layers"
     for directory in (PROJECT_ROOT / "pipeline" / "graph_embedding", layers):
@@ -89,7 +85,6 @@ class ExperimentConfig:
     """Configuration shared by all models in a comparable experiment."""
 
     region: str = "NSW1"
-    horizon_minutes: int = 60
     target_type: TargetType = "change"
     model_features: FeatureSelection = "all"
     validation_fraction: float = 0.15
@@ -100,18 +95,16 @@ class ExperimentConfig:
     random_seed: int = 42
     # Reliability features are appended after loading the shared prepared cache.
     forecast_reliability: bool = False
-    # Standard runs predict the complete hour and include learned graph features.
-    # Explicit overrides remain available for programmatic research/ablations.
-    forecast_mode: Literal["single", "multioutput"] = "multioutput"
+    # None disables learned graph features; the default uses the full NEM graph.
     graph_embedding: GraphEmbeddingConfig | None = field(default_factory=GraphEmbeddingConfig)
 
     def __post_init__(self) -> None:
-        if self.horizon_minutes <= 0:
-            raise ValueError("horizon_minutes must be positive")
-        if self.forecast_mode not in {"single", "multioutput"}:
-            raise ValueError("forecast_mode must be 'single' or 'multioutput'")
-        if self.forecast_mode == "multioutput" and self.feature_config.interval_minutes != 5:
+        if self.feature_config.interval_minutes != 5:
             raise ValueError("The 12-output experiment requires five-minute data")
+        if self.graph_embedding is not None and not isinstance(self.graph_embedding, GraphEmbeddingConfig):
+            raise ValueError("graph_embedding must be GraphEmbeddingConfig or None")
+        if self.graph_embedding is not None and self.graph_embedding.adjacency_mode != "nem":
+            raise ValueError("Every experiment requires the NEM interconnector graph")
         if self.target_type not in {"change", "price", "aemo_error"}:
             raise ValueError("target_type must be 'change', 'price', or 'aemo_error'")
         if not 0 < self.validation_fraction < 1:
@@ -125,13 +118,18 @@ class ExperimentConfig:
             raise ValueError("Unsupported selection_metric")
 
     @property
+    def horizon_minutes(self) -> int:
+        """Longest forecast lead, also used for encoder labels and embargoes."""
+        return HOUR_HORIZONS[-1]
+
+    @property
     def forecast_horizons(self) -> tuple[int, ...]:
-        """Derive the output layout without a second configurable mode setting."""
-        return HOUR_HORIZONS if self.forecast_mode == "multioutput" else ()
+        """Every experiment predicts the complete hour at five-minute intervals."""
+        return HOUR_HORIZONS
 
     @property
     def horizons(self) -> tuple[int, ...]:
-        return self.forecast_horizons or (self.horizon_minutes,)
+        return self.forecast_horizons
 
     @property
     def aemo_forecast_column(self) -> str:
@@ -154,9 +152,9 @@ class ExperimentConfig:
 
     @property
     def graph_embedding_cache_key(self) -> str:
-        """Empty without the stage, so plain experiments keep their filenames."""
+        """Identify the graph encoder's configuration, or the plain-feature path."""
         if self.graph_embedding is None:
-            return ""
+            return "none"
         serialised = json.dumps(asdict(self.graph_embedding), sort_keys=True)
         return hashlib.sha256(serialised.encode("utf-8")).hexdigest()[:10]
 
@@ -166,7 +164,7 @@ class ExperimentConfig:
         filename = (
             f"prepared_{self.region}_{self.horizon_minutes}min_"
             f"{self.target_type}_{self.feature_cache_key}_"
-            f"{f'gnn{embedding}_' if embedding else ''}"
+            f"{f'gnn{embedding}' if self.graph_embedding is not None else 'plain'}_"
             f"v{CACHE_SCHEMA_VERSION}.joblib"
         )
         return self.cache_directory / filename
@@ -195,8 +193,9 @@ class ExperimentConfig:
             "feature_config": asdict(self.feature_config),
             "source_fingerprint": source_fingerprint(),
         }
+        metadata["forecast_horizons"] = list(self.forecast_horizons)
+        metadata["graph_embedding"] = asdict(self.graph_embedding) if self.graph_embedding is not None else None
         if self.graph_embedding is not None:
-            metadata["graph_embedding"] = asdict(self.graph_embedding)
             metadata["graph_source_fingerprint"] = graph_source_fingerprint()
         return metadata
 
@@ -233,7 +232,7 @@ def _cache_payload_is_valid(
 
 
 def graph_embedding_stage(config: ExperimentConfig, *, force_refresh: bool = False):
-    """Return the learned-feature stage for ``prepare_model_data``, or None.
+    """Return the learned-feature stage, or None when disabled by the config.
 
     The encoder is fitted once per horizon/target and cached, so experiments
     on different regions reuse the same embeddings.
@@ -254,7 +253,7 @@ def graph_embedding_stage(config: ExperimentConfig, *, force_refresh: bool = Fal
                 print(f"Loading graph embeddings from {path.name}...")
                 return payload["data"]
         print("Fitting graph encoder...")
-        # Imported here so experiments without the stage never load the encoder.
+        # Cached prepared features do not need to load the encoder runtime.
         from pipeline.graph_embedding.embedder import compute_graph_embeddings
 
         learned = compute_graph_embeddings(
@@ -356,14 +355,14 @@ def prepare_experiment(
     force_refresh: bool = False,
 ) -> ExperimentData:
     """Load prepared data and construct the model-selection split."""
-    if config.forecast_horizons:
-        # Use the longest lead for caching and embargoes without changing the
-        # caller's configuration object.
-        features = config.feature_config
-        if config.target_type == "aemo_error":
-            features = replace(features, p5min_horizons_minutes=config.forecast_horizons)
-        config = replace(config, horizon_minutes=max(config.forecast_horizons), feature_config=features)
+    if config.target_type == "aemo_error":
+        features = replace(config.feature_config, p5min_horizons_minutes=config.forecast_horizons)
+        config = replace(config, feature_config=features)
     prepared = load_prepared_data(config, force_refresh=force_refresh)
+    if config.graph_embedding is not None:
+        expected_embeddings = config.graph_embedding.embedding_columns
+        if not set(expected_embeddings).issubset(prepared.features):
+            raise ValueError("Prepared data must include all GNN embedding features; rebuild the cache")
     if config.forecast_reliability:
         prepared = with_forecast_reliability(prepared)
     # Explicit feature selections must not turn future outcomes into inputs.
@@ -371,8 +370,7 @@ def prepare_experiment(
     leaked = [c for c in prepared.features if c == "target" or c.startswith("target_")]
     if leaked:
         raise ValueError(f"Target columns cannot be model inputs: {leaked}")
-    if config.forecast_horizons:
-        prepared = with_forecast_horizons(prepared, config)
+    prepared = with_forecast_horizons(prepared, config)
     fit_df, validation_df = chronological_validation_split(
         prepared.train_df,
         config,
@@ -510,12 +508,10 @@ def reconstruct_price_forecast(
     if config.target_type == "price":
         return predicted_target
     if config.target_type == "change":
-        base = frame["rrp"].to_numpy()
-        if config.forecast_horizons:
-            base = base[:, None]
+        base = frame["rrp"].to_numpy()[:, None]
     else:
         columns = [f"p5_h{h:02d}_rrp" for h in config.horizons]
-        base = frame[columns].to_numpy() if config.forecast_horizons else frame[columns[0]].to_numpy()
+        base = frame[columns].to_numpy()
     return base + predicted_target
 
 

@@ -268,13 +268,15 @@ def test_experiment_uses_the_reliability_features_only_when_asked(
         experiment_pipeline, "load_prepared_data", lambda config, **_: prepared
     )
     config = ExperimentConfig(
-        forecast_mode="single",
         region="VIC1",
-        horizon_minutes=5,
         validation_fraction=0.2,
         forecast_reliability=switch,
     )
 
+    columns = config.graph_embedding.embedding_columns
+    for frame in (prepared.train_timeline, prepared.test_timeline, prepared.train_df, prepared.test_df):
+        frame[columns] = 0.0
+    prepared.features.extend(columns)
     experiment = prepare_experiment(config)
 
     extra = forecast_reliability_columns(prepared.train_df)

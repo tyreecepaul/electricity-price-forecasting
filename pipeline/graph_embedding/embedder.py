@@ -145,8 +145,6 @@ class GraphEmbedder:
 
         self.regions, self.node_features = panel.regions, panel.node_features
         nodes = len(panel.regions)
-        # The control arm has no cross-region edges, so it gets no edge inputs,
-        # but it shares the spread objective: only message passing differs.
         links = edge_pairs(panel.regions)
         self._linked = np.zeros((nodes, nodes), dtype=bool)
         for a, b, _ in links:
@@ -155,7 +153,6 @@ class GraphEmbedder:
         self.edge_features_used = []
         if (
             config.edge_features
-            and config.adjacency_mode == "nem"
             and panel.edges is not None
         ):
             observed = panel.edges[train_rows][:, self._linked]
@@ -227,7 +224,7 @@ class GraphEmbedder:
         set_random_seed(config.random_seed)
         self.network = SpatioTemporalGraphEncoder(
             len(panel.node_features),
-            torch.tensor(adjacency(panel.regions, config.adjacency_mode)),
+            torch.tensor(adjacency(panel.regions)),
             hidden_dim=config.hidden_dim,
             embedding_dim=config.embedding_dim,
             num_heads=config.num_heads,

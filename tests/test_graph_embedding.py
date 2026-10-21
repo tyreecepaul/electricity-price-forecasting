@@ -133,7 +133,6 @@ def test_adjacency_matches_nem_topology():
 
     reordered = adjacency(("TAS1", "VIC1", "QLD1"))
     np.testing.assert_array_equal(reordered, [[1, 1, 0], [1, 1, 0], [0, 0, 1]])
-    np.testing.assert_array_equal(adjacency(mode="identity"), np.eye(5))
 
 
 def test_panel_keeps_missing_intervals_and_matches_single_region_targets():
@@ -207,15 +206,6 @@ def test_embeddings_cover_every_interval_and_are_deterministic():
     pd.testing.assert_frame_equal(learned.test, again.test)
 
 
-def test_identity_graph_changes_the_embedding():
-    train, test = split_features()
-    graph = embed(train, test)
-    control = embed(train, test, replace(EMBEDDING, adjacency_mode="identity"))
-    assert not np.allclose(
-        graph.test[graph.columns].to_numpy(), control.test[control.columns].to_numpy()
-    )
-
-
 def test_embedding_ignores_later_features():
     train, _ = split_features()
     train = add_model_target(train, "change", HORIZON)
@@ -270,14 +260,14 @@ def test_stage_adds_features_without_changing_scored_rows():
     assert staged.X_test[staged.embedding_columns].notna().all().all()
 
     config = ExperimentConfig(
-        forecast_mode="single",
         region="VIC1",
-        horizon_minutes=HORIZON,
         validation_fraction=0.2,
         model_features=FEATURES,
         feature_config=FEATURE_CONFIG,
         graph_embedding=EMBEDDING,
     )
+    from pipeline.experiment_pipeline import with_forecast_horizons
+    staged = with_forecast_horizons(staged, config)
     fit, validation = chronological_validation_split(staged.train_df, config)
     experiment = ExperimentData(config, staged, fit, validation, staged.test_df)
     check_embedding_precedes_validation(experiment)
@@ -295,15 +285,15 @@ def test_stage_adds_features_without_changing_scored_rows():
 def test_validation_overlapping_the_encoder_fit_is_rejected():
     staged = prepared_data(lambda train, test: embed(train, test))
     config = ExperimentConfig(
-        forecast_mode="single",
         region="VIC1",
-        horizon_minutes=HORIZON,
         validation_fraction=0.2,
         model_features=FEATURES,
         feature_config=FEATURE_CONFIG,
         graph_embedding=EMBEDDING,
         walk_forward_folds=3,
     )
+    from pipeline.experiment_pipeline import with_forecast_horizons
+    staged = with_forecast_horizons(staged, config)
     fit, validation = chronological_validation_split(staged.train_df, config)
     experiment = ExperimentData(config, staged, fit, validation, staged.test_df)
     with pytest.raises(ValueError, match="fit_fraction"):
@@ -332,7 +322,7 @@ def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypat
 
     monkeypatch.setattr(pipeline, "prepare_model_data", prepare_local)
     monkeypatch.setattr(encoder, "compute_graph_embeddings", small_encoder)
-    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path, graph_embedding=EMBEDDING,
                               feature_config=FEATURE_CONFIG, validation_fraction=0.2)
     experiment = pipeline.prepare_experiment(config)
 
@@ -353,29 +343,62 @@ def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypat
     assert calls == [(60, "nem")]
     pd.testing.assert_frame_equal(cached.prepared.X_test, experiment.prepared.X_test)
 
+    # The config alone disables the encoder while keeping identical twelve-output labels.
+    plain_config = replace(config, graph_embedding=None)
+    plain = pipeline.prepare_experiment(plain_config)
+    assert calls == [(60, "nem")]
+    assert plain.prepared.embedding_columns == []
+    assert not any(name.startswith("gnn_emb_") for name in plain.features)
+    pd.testing.assert_frame_equal(plain.prepared.y_test, experiment.prepared.y_test)
+    assert plain.config.horizons == config.horizons
+    plain_model = GRUModel(sequence_length=3, hidden_size=4, max_epochs=1,
+                           batch_size=16, device="cpu")
+    plain_model.train(*final_training_data(plain_model, plain.prepared))
+    assert predict_test(plain_model, plain.prepared).shape == plain.prepared.y_test.shape
+    assert plain_config.cache_file != config.cache_file
+    pipeline.prepare_experiment(plain_config)
+    assert calls == [(60, "nem")]
 
-def test_cache_identity_changes_only_when_the_stage_is_enabled(monkeypatch):
+
+def test_cache_identity_tracks_the_graph_feature_setting(monkeypatch):
     import pipeline.experiment_pipeline as module
-
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source")
-    plain = ExperimentConfig(region="VIC1", graph_embedding=None)
-    staged = replace(plain, graph_embedding=EMBEDDING)
-    control = replace(
-        plain, graph_embedding=replace(EMBEDDING, adjacency_mode="identity")
-    )
+    standard = ExperimentConfig(region="VIC1")
+    tuned = replace(standard, graph_embedding=EMBEDDING)
+    assert "gnn" in standard.cache_file.name
+    assert "graph_embedding" in standard.cache_metadata()
+    assert standard.cache_file != tuned.cache_file
+    assert standard.graph_embedding_cache_file != tuned.graph_embedding_cache_file
+    other_region = replace(tuned, region="NSW1")
+    assert tuned.cache_file != other_region.cache_file
+    assert tuned.graph_embedding_cache_file == other_region.graph_embedding_cache_file
+    assert tuned.graph_embedding_cache_metadata() == other_region.graph_embedding_cache_metadata()
+    plain = replace(standard, graph_embedding=None)
+    assert plain.cache_file != standard.cache_file
+    assert plain.cache_metadata()["graph_embedding"] is None
+    assert "graph_source_fingerprint" not in plain.cache_metadata()
 
-    assert "gnn" not in plain.cache_file.name
-    assert "graph_embedding" not in plain.cache_metadata()
-    assert len({plain.cache_file, staged.cache_file, control.cache_file}) == 3
-    assert staged.graph_embedding_cache_file != control.graph_embedding_cache_file
-    # One encoder fit serves every region's experiment.
-    other_region = replace(staged, region="NSW1")
-    assert staged.cache_file != other_region.cache_file
-    assert staged.graph_embedding_cache_file == other_region.graph_embedding_cache_file
-    assert (
-        staged.graph_embedding_cache_metadata()
-        == other_region.graph_embedding_cache_metadata()
-    )
+
+def test_experiment_rejects_removed_modes_and_missing_graph_features(monkeypatch):
+    import pipeline.experiment_pipeline as pipeline
+
+    for kwargs in ({"forecast_mode": "single"}, {"horizon_minutes": 30}):
+        with pytest.raises(TypeError):
+            ExperimentConfig(**kwargs)
+    with pytest.raises(ValueError, match="GraphEmbeddingConfig or None"):
+        ExperimentConfig(graph_embedding=False)
+    with pytest.raises(ValueError, match="interconnector graph"):
+        ExperimentConfig(graph_embedding=replace(EMBEDDING, adjacency_mode="identity"))
+    monkeypatch.setattr(pipeline, "load_prepared_data", lambda *args, **kwargs: prepared_data())
+    with pytest.raises(ValueError, match="all GNN embedding"):
+        pipeline.prepare_experiment(ExperimentConfig())
+
+
+def test_model_data_rejects_removed_forecast_layout():
+    from pipeline.model_data import final_training_data
+
+    with pytest.raises(ValueError, match="all twelve horizons"):
+        final_training_data(GRUModel(device="cpu"), prepared_data())
 
 
 def linked_panel():
@@ -480,7 +503,6 @@ def test_edges_and_spread_objective_are_recorded_and_change_the_embedding():
     plain = embed(
         train, test, replace(EMBEDDING, edge_features=False, spread_loss_weight=0.0)
     )
-    control = embed(train, test, replace(EMBEDDING, adjacency_mode="identity"))
 
     assert full.diagnostics["edge_features"] == ["flow", "utilisation", "headroom"]
     assert set(full.diagnostics["spread_validation_mae"]) == {
@@ -491,9 +513,6 @@ def test_edges_and_spread_objective_are_recorded_and_change_the_embedding():
     }
     assert plain.diagnostics["edge_features"] == []
     assert plain.diagnostics["spread_validation_mae"] == {}
-    # The control keeps the spread objective but has no edges to describe.
-    assert control.diagnostics["edge_features"] == []
-    assert control.diagnostics["spread_loss_weight"] == 0.5
     assert not np.allclose(
         full.test[full.columns].to_numpy(), plain.test[plain.columns].to_numpy()
     )

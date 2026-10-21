@@ -39,21 +39,14 @@ def edge_pairs(
     return [(a, b, tuple(prefixes)) for (a, b), prefixes in grouped.items()]
 
 
-def adjacency(regions: Sequence[str] = DEFAULT_REGIONS, mode: str = "nem") -> np.ndarray:
-    """Return a symmetric 0/1 matrix with self-loops in the given node order.
-
-    ``identity`` keeps only the self-loops. It is the control that shows
-    whether cross-region edges, rather than the encoder alone, add value.
-    """
-    if mode not in {"nem", "identity"}:
-        raise ValueError("mode must be 'nem' or 'identity'")
+def adjacency(regions: Sequence[str] = DEFAULT_REGIONS) -> np.ndarray:
+    """Return the NEM interconnector matrix with self-loops in the given order."""
     position = {region: index for index, region in enumerate(regions)}
     if len(position) != len(regions):
         raise ValueError("regions must be distinct")
     matrix = np.eye(len(regions), dtype=np.float32)
-    if mode == "nem":
-        for first, second in NEM_INTERCONNECTORS.values():
-            if first in position and second in position:
-                matrix[position[first], position[second]] = 1.0
-                matrix[position[second], position[first]] = 1.0
+    for first, second in NEM_INTERCONNECTORS.values():
+        if first in position and second in position:
+            matrix[position[first], position[second]] = 1.0
+            matrix[position[second], position[first]] = 1.0
     return matrix

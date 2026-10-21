@@ -109,11 +109,11 @@ def search_hyperparameters(
                         data.x_train, data.y_train, data.x_validation, data.y_validation
                     )
                 actual = data.y_validation.to_numpy(dtype=float)
-                outputs = actual.shape[1] if actual.ndim == 2 else 1
+                outputs = len(experiment.prepared.forecast_horizons)
                 actual = forecast_array(actual, len(data.x_validation), outputs, name="validation targets")
                 predicted = forecast_array(model.predict(data.x_validation), len(data.x_validation), outputs)
                 finite = np.isfinite(actual)
-                rows = data.score_rows & (finite.all(axis=1) if actual.ndim == 2 else finite)
+                rows = data.score_rows & finite.all(axis=1)
                 if not rows.any() or not np.isfinite(predicted[rows]).all():
                     raise ValueError(
                         "Model produced missing/non-finite validation results"

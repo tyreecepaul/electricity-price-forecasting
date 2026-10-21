@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -182,12 +183,17 @@ def test_arima_runs_through_search_and_test_prediction():
         test_data=SimpleNamespace(df=raw.iloc[split:]),
     )
     config = ExperimentConfig(
-        forecast_mode="single",
-        horizon_minutes=30,
         validation_fraction=0.25,
         model_features=features,
         feature_config=feature_config,
     )
+    from pipeline.experiment_pipeline import with_forecast_horizons
+    columns = config.graph_embedding.embedding_columns
+    for frame in (prepared.train_timeline, prepared.test_timeline, prepared.train_df, prepared.test_df,
+                  prepared.X_train, prepared.X_test):
+        frame[columns] = 0.0
+    prepared = replace(prepared, features=[*prepared.features, *columns], embedding_columns=columns)
+    prepared = with_forecast_horizons(prepared, config)
     fit, validation = chronological_validation_split(prepared.train_df, config)
     experiment = ExperimentData(config, prepared, fit, validation, prepared.test_df)
 
@@ -203,6 +209,6 @@ def test_arima_runs_through_search_and_test_prediction():
     predicted = predict_test(model, prepared)
     price = reconstruct_price_forecast(prepared.test_df, predicted, config)
 
-    assert predicted.shape == (len(prepared.test_df),)
+    assert predicted.shape == (len(prepared.test_df), 12)
     assert np.isfinite(price).all()
     assert search.best_config["daily_harmonics"] == 2

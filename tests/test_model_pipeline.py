@@ -14,7 +14,7 @@ import pytest
 
 from electricity_price_forecasting_model.final_model.gru import GRUModel
 from electricity_price_forecasting_model.final_model.mlp import MLPModel
-from pipeline.contracts import forecast_vector, indexed_features, validate_timeline
+from pipeline.contracts import indexed_features, validate_timeline
 from pipeline.evaluation import evaluate
 from pipeline.experiment_pipeline import (
     PROJECT_ROOT,
@@ -24,6 +24,7 @@ from pipeline.experiment_pipeline import (
     chronological_validation_split,
     reconstruct_price_forecast,
     walk_forward_splits,
+    with_forecast_horizons,
 )
 from pipeline.model_data import final_training_data, predict_test, selection_data
 from pipeline.preprocessing import FeatureConfig, make_sequences, prepare_model_data
@@ -32,13 +33,14 @@ from pipeline.tuning import search_hyperparameters
 
 @pytest.fixture
 def experiment():
+    count = 200
     raw = pd.DataFrame(
         {
-            "region": ["NSW1"] * 50,
-            "settlement_date": pd.date_range("2024-01-01", periods=50, freq="5min"),
-            "rrp": 100 + np.sin(np.arange(50)),
-            "totaldemand": 200 + np.arange(50),
-            "availablegeneration": np.full(50, 500.0),
+            "region": ["NSW1"] * count,
+            "settlement_date": pd.date_range("2024-01-01", periods=count, freq="5min"),
+            "rrp": 100 + np.sin(np.arange(count)),
+            "totaldemand": 200 + np.arange(count),
+            "availablegeneration": np.full(count, 500.0),
         }
     )
     features = ["rrp", "totaldemand"]
@@ -46,20 +48,24 @@ def experiment():
         price_lags=(1,), demand_lags=(1,), rolling_windows=(2,)
     )
     prepared = prepare_model_data(
-        horizon=10,
+        horizon=60,
         features=features,
         config=feature_config,
-        train_data=SimpleNamespace(df=raw.iloc[:40]),
-        test_data=SimpleNamespace(df=raw.iloc[40:]),
+        train_data=SimpleNamespace(df=raw.iloc[:160]),
+        test_data=SimpleNamespace(df=raw.iloc[160:]),
     )
     config = ExperimentConfig(
-        forecast_mode="single",
-        graph_embedding=None,
-        horizon_minutes=10,
         validation_fraction=0.2,
         model_features=features,
         feature_config=feature_config,
     )
+    # Fixed synthetic embeddings isolate downstream alignment/training tests.
+    columns = config.graph_embedding.embedding_columns
+    for frame in (prepared.train_timeline, prepared.test_timeline, prepared.train_df, prepared.test_df,
+                  prepared.X_train, prepared.X_test):
+        frame[columns] = 0.0
+    prepared = replace(prepared, features=[*prepared.features, *columns], embedding_columns=columns)
+    prepared = with_forecast_horizons(prepared, config)
     fit, validation = chronological_validation_split(prepared.train_df, config)
     return ExperimentData(config, prepared, fit, validation, prepared.test_df)
 
@@ -77,11 +83,11 @@ def small_gru(**kwargs):
 
 def test_timeline_retains_unlabeled_training_tail(experiment):
     prepared = experiment.prepared
-    assert len(prepared.train_timeline) == 40
-    assert len(prepared.train_df) == 38
-    assert prepared.train_timeline["target"].tail(2).isna().all()
-    assert len(prepared.test_timeline) == 10
-    assert len(prepared.test_df) == 8
+    assert len(prepared.train_timeline) == 160
+    assert len(prepared.train_df) == 148
+    assert prepared.train_timeline["target"].tail(12).isna().all()
+    assert len(prepared.test_timeline) == 40
+    assert len(prepared.test_df) == 28
 
 
 def test_embargo_masks_labels_but_retains_recent_context(experiment):
@@ -90,15 +96,15 @@ def test_embargo_masks_labels_but_retains_recent_context(experiment):
     times = data.x_train.index.get_level_values("settlement_date")
     start = data.x_validation.index.get_level_values("settlement_date")[0]
     assert times[-1] == start - pd.Timedelta(minutes=5)
-    assert data.y_train.tail(2).isna().all()
-    assert data.y_train.notna().sum() == len(experiment.fit_df)
+    assert data.y_train.tail(12).isna().all().all()
+    assert data.y_train.notna().all(axis=1).sum() == len(experiment.fit_df)
     model.train_with_validation(
         data.x_train, data.y_train, data.x_validation, data.y_validation
     )
     assert model.context_frame.index[-1] == data.x_train.index[-1]
     # The scaler does not fit on embargo rows.
     pd.testing.assert_series_equal(
-        model.feature_medians, data.x_train.loc[data.y_train.notna()].median()
+        model.feature_medians, data.x_train.loc[data.y_train.notna().all(axis=1)].median()
     )
 
 
@@ -149,7 +155,7 @@ def test_tcn_runs_through_selection_refit_and_test_alignment(experiment):
     prices = reconstruct_price_forecast(
         experiment.test_df, predictions, experiment.config
     )
-    result = evaluate(model, experiment.test_df["target_rrp"].to_numpy(), prices)
+    result = evaluate(model, experiment.test_df[[f"target_rrp_h{h:02d}" for h in experiment.config.horizons]].to_numpy(), prices)
 
     assert search.best_config["sequence_length"] == 3
     assert len(predictions) == len(experiment.test_df)
@@ -189,22 +195,14 @@ def test_eager_helper_rejects_future_history(experiment):
         )
 
 
-def test_column_predictions_do_not_broadcast():
+def test_forecasts_require_all_twelve_horizons():
     frame = pd.DataFrame({"rrp": [10.0, 20.0]})
-    predicted = reconstruct_price_forecast(
-        frame, np.array([[1.0], [2.0]]), ExperimentConfig(target_type="change", forecast_mode="single")
-    )
-    np.testing.assert_array_equal(predicted, [11.0, 22.0])
-    result = evaluate(
-        SimpleNamespace(get_model_name=lambda: "column"),
-        np.array([11.0, 22.0]),
-        predicted[:, None],
-    )
-    assert result.metrics["mae"] == 0
-    with pytest.raises(ValueError, match="shape"):
-        forecast_vector(np.ones((2, 2)), 2)
-    with pytest.raises(ValueError, match="shape"):
-        reconstruct_price_forecast(frame, np.ones((1, 2)), ExperimentConfig())
+    config = ExperimentConfig()
+    predicted = reconstruct_price_forecast(frame, np.ones((2, 12)), config)
+    np.testing.assert_array_equal(predicted, np.tile([[11.0], [21.0]], (1, 12)))
+    for invalid in (np.ones(2), np.ones((2, 1)), np.ones((2, 2))):
+        with pytest.raises(ValueError, match="shape"):
+            reconstruct_price_forecast(frame, invalid, config)
 
 
 def test_cache_metadata_tracks_feature_config_and_source(experiment, monkeypatch):
@@ -220,10 +218,10 @@ def test_cache_metadata_tracks_feature_config_and_source(experiment, monkeypatch
     assert not _cache_payload_is_valid(payload, changed)
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source-b")
     assert not _cache_payload_is_valid(payload, config)
-    # Encoder code only identifies caches of experiments that use the encoder.
+    # Encoder changes invalidate every experiment cache.
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source-a")
     monkeypatch.setattr(module, "graph_source_fingerprint", lambda: "graph-b")
-    assert _cache_payload_is_valid(payload, config)
+    assert not _cache_payload_is_valid(payload, config)
     assert PROJECT_ROOT == Path(__file__).resolve().parents[1]
 
 
@@ -235,7 +233,7 @@ def test_walk_forward_folds_are_disjoint_and_embargoed(experiment):
     assert len(splits) == 3
     for fit, validation in splits:
         assert (
-            fit["settlement_date"] + pd.Timedelta(minutes=10)
+            fit["settlement_date"] + pd.Timedelta(minutes=60)
             < validation["settlement_date"].min()
         ).all()
     assert splits[0][1]["settlement_date"].max() < splits[1][1]["settlement_date"].min()
@@ -253,7 +251,7 @@ def test_search_injects_seed_metric_and_refit_even_without_epoch_grid(
         return SimpleNamespace(best_epoch=2, refit_config={"max_epochs": 2})
 
     monkeypatch.setattr(MLPModel, "train_with_validation", fake_train)
-    monkeypatch.setattr(MLPModel, "predict", lambda self, x: np.zeros(len(x)))
+    monkeypatch.setattr(MLPModel, "predict", lambda self, x: np.zeros((len(x), 12)))
     result = search_hyperparameters(
         MLPModel,
         {"hidden_sizes": [(4,)], "dropout": [0]},
@@ -290,13 +288,24 @@ def test_shared_validation_metric_is_used(experiment, monkeypatch):
     assert model.validation_mae_history == []
 
 
+@pytest.mark.parametrize("use_gnn", [True, False])
 def test_saved_run_round_trips_model_and_context(
-    experiment, tmp_path, monkeypatch
+    experiment, tmp_path, monkeypatch, use_gnn
 ):
     import main
+    import matplotlib
 
+    matplotlib.use("Agg", force=True)
+
+    if not use_gnn:
+        prepared = experiment.prepared
+        features = [c for c in prepared.features if c not in prepared.embedding_columns]
+        prepared = replace(prepared, features=features, embedding_columns=[],
+                           X_train=prepared.X_train[features], X_test=prepared.X_test[features])
+        experiment = replace(experiment, config=replace(experiment.config, graph_embedding=None),
+                             prepared=prepared)
     model_type = GRUModel
-    monkeypatch.setattr(main, "prepare_experiment", lambda config: experiment)
+    monkeypatch.setattr(main, "prepare_experiment", lambda config, **kwargs: experiment)
     grid = {
         "sequence_length": [3],
         "hidden_size": [4],
@@ -305,7 +314,7 @@ def test_saved_run_round_trips_model_and_context(
         "device": ["cpu"],
     }
     monkeypatch.setattr(main, "MODEL_REGISTRY", [(model_type, grid)])
-    main.main(config=experiment.config, output_directory=tmp_path, save_results=True)
+    main.main(config=experiment.config, output_directory=tmp_path, save_results=True, skip_shap=True)
     directory = next(tmp_path.iterdir())
     assert (directory / "experiment.json").exists()
     assert (directory / "summary.csv").exists()
@@ -319,13 +328,16 @@ def test_saved_run_round_trips_model_and_context(
     ):
         assert (model_directory / filename).exists()
     metadata = json.loads((model_directory / "model.json").read_text())
-    assert metadata["graph_embedding"] is None
+    if use_gnn:
+        assert metadata["graph_embedding"]["adjacency_mode"] == "nem"
+    else:
+        assert metadata["graph_embedding"] is None
     saved = pd.read_csv(model_directory / "predictions.csv")
     model = joblib.load(model_directory / "model.joblib")
     prediction = reconstruct_price_forecast(
         experiment.test_df, predict_test(model, experiment.prepared), experiment.config
     )
-    np.testing.assert_allclose(prediction, saved["prediction_rrp"], rtol=1e-6)
+    np.testing.assert_allclose(prediction.T.reshape(-1), saved["prediction_rrp"], rtol=1e-6)
     assert model.device.type == "cpu"
 
 

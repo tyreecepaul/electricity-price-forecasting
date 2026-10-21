@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -144,7 +143,7 @@ def test_cli_passes_standard_defaults_to_the_runner(monkeypatch):
     assert "graph_embeddings" not in options
 
 
-def run_fake_models(module, monkeypatch, *, test_rows=None, ablation_variants=False, **arguments):
+def run_fake_models(module, monkeypatch, **arguments):
     """Run ``main`` with stub models and report what each one was given."""
 
     def fake_model(name):
@@ -163,13 +162,13 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, ablation_variants=Fa
     nem = module.EXPERIMENT.graph_embedding
     prepared_configs, searches = [], []
 
-    def fake_prepare(config):
+    def fake_prepare(config, **kwargs):
         prepared_configs.append(config.graph_embedding)
-        rows = (test_rows or {}).get(config.graph_embedding, 2)
+        rows = 2
         test_df = pd.DataFrame(
             {
                 "settlement_date": pd.date_range("2025-01-01", periods=rows, freq="5min"),
-                "target_rrp": 1.0,
+                **{f"target_rrp_h{h:02d}": 1.0 for h in module.HOUR_HORIZONS},
             }
         )
         return SimpleNamespace(prepared="prepared", test_df=test_df, config=config)
@@ -195,8 +194,6 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, ablation_variants=Fa
     )
     monkeypatch.setattr(module, "print_evaluation_summary", lambda *args: None)
 
-    if ablation_variants:
-        arguments["graph_embeddings"] = {second: None}
     module.main(save_results=False, **arguments)
     return nem, prepared_configs, searches
 
@@ -214,15 +211,16 @@ def test_models_sharing_an_embedding_share_one_prepared_experiment(monkeypatch):
     ]
 
 
-def test_programmatic_ablation_can_disable_graph_features(monkeypatch):
+def test_graph_features_can_be_disabled_only_through_experiment_config(monkeypatch):
+    from dataclasses import replace
+
     module = load_main_module()
-
     _, prepared, searches = run_fake_models(
-        module, monkeypatch, config=replace(module.EXPERIMENT, graph_embedding=None)
+        module, monkeypatch,
+        config=replace(module.EXPERIMENT, graph_embedding=None), device="xpu",
     )
-
     assert prepared == [None]
-    assert [name for name, _, _ in searches] == ["First", "Second", "Third"]
+    assert all(embedding is None for _, embedding, _ in searches)
 
 
 def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
@@ -245,31 +243,22 @@ def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
     assert len(sweep_grid["sequence_length"]) > 1 and len(sweep_grid["hidden_size"]) > 1
 
 
-def test_embedding_variants_must_score_the_same_test_rows(monkeypatch):
-    import pytest
-
-    module = load_main_module()
-    nem = module.EXPERIMENT.graph_embedding
-
-    with pytest.raises(RuntimeError, match="different test rows"):
-        run_fake_models(module, monkeypatch, test_rows={nem: 2, None: 3},
-                        ablation_variants=True)
-
-
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):
     module = load_main_module()
 
     train_x = pd.DataFrame({"feature_a": [1.0, 2.0], "feature_b": [3.0, 4.0]})
-    train_y = pd.Series([0.5, -0.5], name="target")
+    train_y = pd.DataFrame({f"target_h{h:02d}": [0.5, -0.5] for h in module.HOUR_HORIZONS})
     test_x = pd.DataFrame({"feature_a": [5.0, 6.0], "feature_b": [7.0, 8.0]})
     test_df = pd.DataFrame(
         {
             "rrp": [100.0, 200.0],
-            "target_rrp": [110.0, 190.0],
+            **{f"target_rrp_h{h:02d}": [110.0, 190.0] for h in module.HOUR_HORIZONS},
             "target": [10.0, -10.0],
         }
     )
     prepared = SimpleNamespace(
+        forecast_horizons=module.HOUR_HORIZONS,
+        embedding_columns=["feature_b"],
         X_train=train_x,
         y_train=train_y,
         X_test=test_x,
@@ -297,7 +286,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
 
         def predict(self, x_test):
             pd.testing.assert_frame_equal(x_test, test_x)
-            return np.array([5.0, -5.0])
+            return np.tile([[5.0], [-5.0]], (1, 12))
 
         def get_model_name(self):
             return self.model_name
@@ -311,8 +300,8 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     def fake_reconstruct(frame, predicted_target, config):
         assert frame is test_df
         assert config is module.EXPERIMENT
-        np.testing.assert_array_equal(predicted_target, [5.0, -5.0])
-        return frame["rrp"].to_numpy() + predicted_target
+        np.testing.assert_array_equal(predicted_target, np.tile([[5.0], [-5.0]], (1, 12)))
+        return frame["rrp"].to_numpy()[:, None] + predicted_target
 
     evaluated = {}
 
@@ -322,7 +311,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
         return SimpleNamespace(model_name=model.get_model_name())
 
     monkeypatch.setattr(module, "MODEL_REGISTRY", [(FakeModel, {"depth": [1]})])
-    monkeypatch.setattr(module, "prepare_experiment", lambda config: experiment)
+    monkeypatch.setattr(module, "prepare_experiment", lambda config, **kwargs: experiment)
     monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
     monkeypatch.setattr(module, "reconstruct_price_forecast", fake_reconstruct)
@@ -332,7 +321,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     module.main(save_results=False)
 
     pd.testing.assert_frame_equal(trained["x"], train_x)
-    pd.testing.assert_series_equal(trained["y"], train_y)
+    pd.testing.assert_frame_equal(trained["y"], train_y)
     assert trained["depth"] == 1
-    np.testing.assert_array_equal(evaluated["actual"], [110.0, 190.0])
-    np.testing.assert_array_equal(evaluated["predicted"], [105.0, 195.0])
+    np.testing.assert_array_equal(evaluated["actual"], np.tile([[110.0], [190.0]], (1, 12)))
+    np.testing.assert_array_equal(evaluated["predicted"], np.tile([[105.0], [195.0]], (1, 12)))

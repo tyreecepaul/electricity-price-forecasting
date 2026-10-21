@@ -25,7 +25,6 @@ from pipeline.experiment_pipeline import (
     print_experiment_summary,
     reconstruct_price_forecast,
 )
-from pipeline.graph_embedding import GraphEmbeddingConfig
 from pipeline.model import Model
 from pipeline.model_data import final_training_data, predict_test
 from pipeline.contracts import indexed_features, price_values
@@ -33,7 +32,7 @@ from pipeline.neural import TorchForecastModel
 from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
-    region="VIC1",
+    region="NSW1",
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -305,7 +304,7 @@ def report_gradient_shap(model, prepared, reference_features, config, run_direct
         positions = np.arange(len(inputs))
     importances, feature_lags, residuals = {}, {}, []
     for horizon in requested:
-        target = config.horizons.index(horizon) if config.forecast_horizons else None
+        target = config.horizons.index(horizon)
         if verbose:
             print(f"\nGradientSHAP: +{horizon}min {config.target_type}, "
                   f"samples<={sample_size}, references<=64, draws={n_samples}", flush=True)
@@ -336,7 +335,7 @@ def report_gradient_shap(model, prepared, reference_features, config, run_direct
                 print(timestep_summary.to_string(float_format=lambda value: f"{value:.3f}"))
         if run_directory is not None:
             path = run_directory / model_cli_name(type(model))
-            suffix = f"_h{horizon:02d}" if config.forecast_horizons else ""
+            suffix = f"_h{horizon:02d}"
             attribution.assign(completeness_residual=attribution.attrs["completeness_residual"]).to_csv(path / f"gradient_shap{suffix}.csv")
             feature_summary.to_csv(path / f"feature_importance{suffix}.csv", index_label="feature")
             if model.requires_sequence:
@@ -385,126 +384,97 @@ def main(
     plot_results=False,
     plot_details=False,
     verbose=False,
-    graph_embeddings=None,
     sweep=False,
 ) -> None:
     """Prepare shared data, select/refit each model, then score the held-out test.
 
     Temporal representation choices live in model_data; model-specific network
     and fitting details stay behind the common model interface.
-    All models use the shared graph-enriched features by default. The optional
-    graph_embeddings mapping is reserved for programmatic ablation studies;
-    variants must score identical test origins.
+    Every model uses twelve targets and the same feature configuration.
+    Graph features are enabled unless config.graph_embedding is None.
     """
     config = config or EXPERIMENT
     if shap_horizons and not set(shap_horizons).issubset(config.horizons):
         raise ValueError(f"Attribution horizons must be selected from {config.horizons}")
-    if graph_embeddings is None:
-        graph_embeddings = {}
-    groups: dict[GraphEmbeddingConfig | None, list] = {}
-    for entry in select_model_registry(selected_models):
-        embedding = graph_embeddings.get(entry[0], config.graph_embedding)
-        if embedding is not None and device is not None:
-            embedding = replace(embedding, device=device)
-        groups.setdefault(embedding, []).append(entry)
-
+    if device is not None and config.graph_embedding is not None:
+        config = replace(config, graph_embedding=replace(config.graph_embedding, device=device))
+    entries = select_model_registry(selected_models)
     run_directory = None
     results: list[ModelResult] = []
     fit_times, shap_importances = {}, {}
-    prepared = test_origins = reference_prices = None
-    for embedding, entries in groups.items():
-        group_config = (config if embedding == config.graph_embedding
-                        else replace(config, graph_embedding=embedding))
-        experiment: ExperimentData = (
-            prepare_experiment(group_config, force_refresh=True)
-            if force_refresh
-            else prepare_experiment(group_config)
+    experiment: ExperimentData = prepare_experiment(config, force_refresh=force_refresh)
+    config = experiment.config
+    print_experiment_summary(experiment)
+    prepared = experiment.prepared
+    y_test_price = price_values(experiment.test_df, config.horizons)
+    if save_results:
+        run_directory = create_run_directory(
+            config,
+            Path(output_directory) if output_directory is not None
+            else Path(__file__).resolve().parent / "reports" / "runs",
+            prepared,
         )
-        # Preparation normalises the effective horizon before graph fitting and
-        # embargoes. Keep the user's base configuration for the other groups.
-        group_config = experiment.config
-        print_experiment_summary(experiment)
-        prepared = experiment.prepared
 
-        origins = (experiment.test_df["settlement_date"].to_numpy()
-                   if "settlement_date" in experiment.test_df else None)
-        y_test_price = price_values(experiment.test_df, getattr(prepared, "forecast_horizons", ()))
-        if reference_prices is None:
-            test_origins, reference_prices = origins, y_test_price
-        elif (origins is None or not np.array_equal(origins, test_origins)
-              or not np.array_equal(y_test_price, reference_prices, equal_nan=True)):
-            raise RuntimeError("Graph-embedding variants produced different test rows or targets")
+    for model_factory, hyperparam_grid in entries:
+        print(f"=== {model_factory.model_name} ===")
+        if sweep:
+            hyperparam_grid = SWEEP_GRIDS.get(model_factory, hyperparam_grid)
+        hyperparam_grid = dict(hyperparam_grid)
+        if issubclass(model_factory, TorchForecastModel):
+            if device is not None:
+                hyperparam_grid["device"] = [device]
+            if max_epochs is not None:
+                hyperparam_grid["max_epochs"] = [max_epochs]
 
-        if save_results and run_directory is None:
-            run_directory = create_run_directory(
-                group_config,
-                Path(output_directory) if output_directory is not None
-                else Path(__file__).resolve().parent / "reports" / "runs",
-                # Per-model metadata records diagnostics when embeddings differ.
-                prepared if len(groups) == 1 else None,
+        fit_started = perf_counter()
+        search_result: SearchResult = search_hyperparameters(
+            model_factory, hyperparam_grid, experiment
+        )
+
+        # Start a fresh fit on all pre-test data, using the selected epoch budget.
+        # Reusing the search model would leave out its validation-period training data.
+        model: Model = model_factory(**search_result.best_config)
+        training_device = getattr(model, "device", "cpu")
+        using_gpu = str(training_device).split(":")[0] in {"cuda", "xpu"}
+        print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({training_device})")
+        x_train, y_train = final_training_data(model, prepared)
+        model.train(x_train, y_train)
+        fit_times[model.get_model_name()] = perf_counter() - fit_started
+
+        y_pred: np.ndarray = predict_test(model, prepared)
+        # Model outputs may be price changes or AEMO residuals. Convert them to
+        # actual RRP units before comparing with prices and common baselines.
+        predicted_price: np.ndarray = reconstruct_price_forecast(
+            experiment.test_df, y_pred, experiment.config
+        )
+
+        result = evaluate(model, y_test_price, predicted_price)
+
+        results.append(result)
+        if run_directory is not None:
+            save_model_run(
+                run_directory,
+                model,
+                search_result,
+                experiment.test_df,
+                predicted_price,
+                result,
+                extra_columns=(config.aemo_forecast_column,),
+                prepared=prepared,
+                graph_embedding=config.graph_embedding,
             )
-
-        for model_factory, hyperparam_grid in entries:
-            print(f"=== {model_factory.model_name} ===")
-            if sweep:
-                hyperparam_grid = SWEEP_GRIDS.get(model_factory, hyperparam_grid)
-            hyperparam_grid = dict(hyperparam_grid)
-            if issubclass(model_factory, TorchForecastModel):
-                if device is not None:
-                    hyperparam_grid["device"] = [device]
-                if max_epochs is not None:
-                    hyperparam_grid["max_epochs"] = [max_epochs]
-
-            fit_started = perf_counter()
-            search_result: SearchResult = search_hyperparameters(
-                model_factory, hyperparam_grid, experiment
+        if isinstance(model, TorchForecastModel) and not skip_shap:
+            print(f"Computing GradientSHAP for {model.get_model_name()}...", flush=True)
+            shap_importances[model.get_model_name()] = report_gradient_shap(
+                model, prepared, x_train, config, run_directory,
+                horizons=shap_horizons, sample_size=shap_samples, n_samples=shap_draws, verbose=verbose,
             )
-
-            # Start a fresh fit on all pre-test data, using the selected epoch budget.
-            # Reusing the search model would leave out its validation-period training data.
-            model: Model = model_factory(**search_result.best_config)
-            training_device = getattr(model, "device", "cpu")
-            using_gpu = str(training_device).split(":")[0] in {"cuda", "xpu"}
-            print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({training_device})")
-            x_train, y_train = final_training_data(model, prepared)
-            model.train(x_train, y_train)
-            fit_times[model.get_model_name()] = perf_counter() - fit_started
-
-            y_pred: np.ndarray = predict_test(model, prepared)
-            # Model outputs may be price changes or AEMO residuals. Convert them to
-            # actual RRP units before comparing with prices and common baselines.
-            predicted_price: np.ndarray = reconstruct_price_forecast(
-                experiment.test_df, y_pred, experiment.config
-            )
-
-            result = evaluate(model, y_test_price, predicted_price)
-
-            results.append(result)
-            if run_directory is not None:
-                save_model_run(
-                    run_directory,
-                    model,
-                    search_result,
-                    experiment.test_df,
-                    predicted_price,
-                    result,
-                    extra_columns=(group_config.aemo_forecast_column,),
-                    prepared=prepared,
-                    graph_embedding=embedding,
-                )
-            if isinstance(model, TorchForecastModel) and not skip_shap:
-                print(f"Computing GradientSHAP for {model.get_model_name()}...", flush=True)
-                shap_importances[model.get_model_name()] = report_gradient_shap(
-                    model, prepared, x_train, group_config, run_directory,
-                    horizons=shap_horizons, sample_size=shap_samples, n_samples=shap_draws, verbose=verbose,
-                )
 
     leaderboard = print_evaluation_summary(results, prepared, verbose, fit_times)
     if run_directory is not None:
         save_run_summary(run_directory, results)
         leaderboard.to_csv(run_directory / "leaderboard.csv")
-        if config.forecast_horizons:
-            compare_models_by_horizon(results, prepared).to_csv(run_directory / "metrics_by_horizon.csv")
+        compare_models_by_horizon(results, prepared).to_csv(run_directory / "metrics_by_horizon.csv")
         print(f"Run artifacts saved to {run_directory}")
     if plot_results or run_directory is not None:
         # Lazy import keeps text-only runs independent of a GUI backend.
