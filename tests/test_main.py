@@ -134,12 +134,14 @@ def test_cli_passes_standard_defaults_to_the_runner(monkeypatch):
     module = load_main_module()
     calls = []
     monkeypatch.setattr(module, "main", lambda models, **kwargs: calls.append((models, kwargs)))
-    module.run_cli(["--models", "tcn", "--device", "xpu"])
+    module.run_cli(["--models", "tcn", "--device", "xpu", "--plot-seed", "7"])
     models, options = calls[0]
     assert models == ["tcn"]
     assert options["config"].forecast_horizons == tuple(range(5, 61, 5))
     assert options["config"].graph_embedding.adjacency_mode == "nem"
     assert options["device"] == "xpu"
+    assert options["plot_seed"] == 7
+    assert options["config"].random_seed == module.EXPERIMENT.random_seed
     assert "graph_embeddings" not in options
 
 
@@ -171,7 +173,7 @@ def run_fake_models(module, monkeypatch, **arguments):
                 **{f"target_rrp_h{h:02d}": 1.0 for h in module.HOUR_HORIZONS},
             }
         )
-        return SimpleNamespace(prepared="prepared", test_df=test_df, config=config)
+        return SimpleNamespace(prepared=SimpleNamespace(test_df=test_df), test_df=test_df, config=config)
 
     def fake_search(factory, grid, experiment):
         searches.append((factory.model_name, experiment.config.graph_embedding, grid))

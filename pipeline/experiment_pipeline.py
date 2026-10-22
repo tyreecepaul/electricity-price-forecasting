@@ -164,8 +164,7 @@ class ExperimentConfig:
         filename = (
             f"prepared_{self.region}_{self.horizon_minutes}min_"
             f"{self.target_type}_{self.feature_cache_key}_"
-            f"{f'gnn{embedding}' if self.graph_embedding is not None else 'plain'}_"
-            f"v{CACHE_SCHEMA_VERSION}.joblib"
+            f"{f'gnn{embedding}' if self.graph_embedding is not None else 'plain'}.joblib"
         )
         return self.cache_directory / filename
 
@@ -174,7 +173,7 @@ class ExperimentConfig:
         """Encoder output is independent of ``region`` and shared across them."""
         filename = (
             f"graph_embedding_{self.horizon_minutes}min_{self.target_type}_"
-            f"{self.graph_embedding_cache_key}_v{CACHE_SCHEMA_VERSION}.joblib"
+            f"{self.graph_embedding_cache_key}.joblib"
         )
         return self.cache_directory / filename
 
