@@ -71,6 +71,25 @@ Omitting `--models` runs all seven registered models. Deep models produce
 12 outputs, XGBoost shares one horizon-conditioned ensemble across the leads,
 and ARIMA projects one fitted price model over the hour.
 
+### Re-evaluate a saved run
+
+```bash
+python main.py --load-run reports/runs/<run-id> --skip-shap --plot --plot-seed 7
+```
+
+This loads the run's fitted models and original experiment configuration, then
+recomputes test predictions and metrics without tuning, training or rebuilding
+data. Add `--models lstm` to select a saved model. The matching prepared-data
+cache must still exist, including GNN embeddings when enabled. Load only trusted
+joblib files.
+
+Change `--plot-seed` to view different example timestamps. Predictions and
+metrics stay the same.
+
+`--save` writes evaluation reports into a new run directory and leaves the
+original models untouched. See the [experiment guide](docs/experiments.md#re-evaluate-a-saved-run)
+for compatible options and limitations.
+
 ## Change the configuration
 
 Edit [`main.py`](main.py):
@@ -81,9 +100,9 @@ Edit [`main.py`](main.py):
 | GNN features | `EXPERIMENT.graph_embedding`; set to `None` to disable |
 | Model hyperparameters and search grids | `MODEL_REGISTRY` |
 
-The current experiment uses **NSW1**, price-change targets, all standard
+The current experiment uses **QLD1**, price-change targets, all standard
 features plus GNN embeddings, and a 20% validation fraction. All experiments
-use the complete 12-horizon curve; there is no horizon-selection CLI flag.
+use the complete 12-horizon curve.
 
 Set `EXPERIMENT.region` to one of these NEM region codes:
 
@@ -110,9 +129,8 @@ Each run forecasts one region; enabled GNN features still use the other NEM
 regions as context. Add `graph_embedding=None` to disable those features.
 Validation fractions must be strictly between 0 and 1.
 
-Tuning always uses `MODEL_REGISTRY`: one value fixes a parameter, while multiple
-values search all combinations. For example, `"hidden_size": [16, 32, 64]`
-compares three sizes without an extra command-line flag.
+In `MODEL_REGISTRY`, one value fixes a parameter and multiple values search all
+combinations. For example, `"hidden_size": [16, 32, 64]` compares three sizes.
 
 Use `--device cpu|cuda|xpu|auto` to select the device for the GNN encoder and
 deep models. Automatic selection prefers CUDA, then XPU, then CPU.
@@ -134,12 +152,9 @@ Model comparisons use shared eligible forecast values.
 - `--plot` opens forecast and attribution plots.
 - `--save` writes to `reports/runs/<run-id>/`; use `--output-dir PATH` to
   choose another parent directory.
-- Runs create no result artifacts unless `--save` is supplied. Data caches
-  remain enabled.
 
 Saved runs include comparison tables, per-horizon predictions, forecast curves,
-plots and CPU model bundles. Graph-enabled bundles require `gnn_emb_*` input
-features; the separate graph encoder is not included in `model.joblib`.
+plots and fitted model bundles.
 
 GradientSHAP runs for deep models by default. Its plots show each feature's
 share of total absolute attribution, **not accuracy or explained variance**.

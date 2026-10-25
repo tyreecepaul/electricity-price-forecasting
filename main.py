@@ -1,4 +1,5 @@
 import argparse
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +15,7 @@ from electricity_price_forecasting_model.final_model.mlp import MLPModel
 from electricity_price_forecasting_model.final_model.tcn import TCNModel
 from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
 from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
-from pipeline.artifacts import create_run_directory, save_model_run, save_run_summary
+from pipeline.artifacts import create_run_directory, save_model_run, save_model_evaluation, save_run_summary
 from pipeline.attribution import ShapSummary, feature_lag_importance, importance_percent
 from pipeline.evaluation import ModelResult, compare_models_by_horizon, evaluate, print_evaluation_summary
 from pipeline.experiment_pipeline import (
@@ -28,11 +29,12 @@ from pipeline.experiment_pipeline import (
 from pipeline.model import Model
 from pipeline.model_data import final_training_data, predict_test
 from pipeline.contracts import indexed_features, price_values
-from pipeline.neural import TorchForecastModel
+from pipeline.neural import TorchForecastModel, resolve_device
+from pipeline.saved_runs import load_saved_run
 from pipeline.tuning import SearchResult, search_hyperparameters
 
 EXPERIMENT: ExperimentConfig = ExperimentConfig(
-    region="NSW1",
+    region="QLD1",
     target_type="change",
     model_features="all",
     validation_fraction=0.20,
@@ -183,8 +185,11 @@ def select_model_registry(
 
 def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Tune and evaluate electricity-price forecasting models."
+        description="Train forecasting models or evaluate a trusted saved run.",
+        allow_abbrev=False,
     )
+    parser.add_argument("--load-run", type=Path,
+                        help="Evaluate trusted saved model bundles using their matching prepared-data cache; never train.")
     parser.add_argument(
         "--models",
         nargs="+",
@@ -199,6 +204,8 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         default=EXPERIMENT.selection_metric,
     )
     parser.add_argument("--seed", type=int, default=EXPERIMENT.random_seed)
+    parser.add_argument("--plot-seed", type=int,
+                        help="Seed for selecting forecast examples; defaults to the experiment seed.")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "xpu"], default="auto",
                         help="Neural device. Auto prefers CUDA, then Intel XPU, then CPU.")
     parser.add_argument("--epochs", type=int, help="Override the neural epoch limit in the model grids.")
@@ -225,13 +232,21 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Rebuild prepared data from ingestion/cache",
     )
+    arguments = list(arguments) if arguments is not None else sys.argv[1:]
     args = parser.parse_args(arguments)
+    if args.load_run:
+        training_options = {"--refresh", "--epochs", "--folds", "--metric", "--seed"}
+        supplied = training_options.intersection(arg.split("=", 1)[0] for arg in arguments)
+        if supplied:
+            parser.error(f"--load-run restores the saved experiment; cannot use {', '.join(sorted(supplied))}")
     if args.plot_details and not (args.plot or args.save):
         parser.error("--plot-details requires --plot or --save")
     if args.shap_3d and not (args.plot or args.save):
         parser.error("--shap-3d requires --plot or --save")
     if args.shap_top_features < 0:
         parser.error("--shap-top-features must be zero (all features) or positive")
+    if args.plot_seed is not None and args.plot_seed < 0:
+        parser.error("--plot-seed must be non-negative")
     if min(args.shap_samples, args.shap_draws) < 1 or (args.epochs is not None and args.epochs < 1):
         parser.error("Epochs and attribution counts must be positive")
     horizons = HOUR_HORIZONS
@@ -354,78 +369,98 @@ def main(
     shap_top_features=20,
     shap_3d=False,
     plot_results=False,
+    plot_seed=None,
     plot_details=False,
     verbose=False,
+    load_run=None,
 ) -> None:
-    """Prepare shared data, select/refit each model, then score the held-out test.
+    """Train or reload forecasters, then evaluate the held-out test period.
 
     Temporal representation choices live in model_data; model-specific network
     and fitting details stay behind the common model interface.
     Every model uses twelve targets and the same feature configuration.
     Graph features are enabled unless config.graph_embedding is None.
+    Saved-run evaluation requires matching cached inputs and never fits anything.
     """
-    config = config or EXPERIMENT
+    if load_run is not None:
+        if config is not None or force_refresh or max_epochs is not None:
+            raise ValueError("Loading a saved run cannot override its experiment or request training/refresh")
+        saved_run = load_saved_run(load_run, selected_models)
+        config, prepared = saved_run.config, saved_run.prepared
+        entries = [(type(saved.model), {}) for saved in saved_run.models.values()]
+        print(f"Evaluating saved models from {saved_run.directory}; tuning and training are skipped.")
+    else:
+        saved_run = None
+        config = config or EXPERIMENT
+        if device is not None and config.graph_embedding is not None:
+            config = replace(config, graph_embedding=replace(config.graph_embedding, device=device))
+        entries = select_model_registry(selected_models)
+        experiment: ExperimentData = prepare_experiment(config, force_refresh=force_refresh)
+        config, prepared = experiment.config, experiment.prepared
+        print_experiment_summary(experiment)
     if shap_horizons and not set(shap_horizons).issubset(config.horizons):
         raise ValueError(f"Attribution horizons must be selected from {config.horizons}")
-    if device is not None and config.graph_embedding is not None:
-        config = replace(config, graph_embedding=replace(config.graph_embedding, device=device))
-    entries = select_model_registry(selected_models)
     run_directory = None
     results: list[ModelResult] = []
     fit_times, shap_importances = {}, {}
-    experiment: ExperimentData = prepare_experiment(config, force_refresh=force_refresh)
-    config = experiment.config
-    print_experiment_summary(experiment)
-    prepared = experiment.prepared
-    y_test_price = price_values(experiment.test_df, config.horizons)
+    y_test_price = price_values(prepared.test_df, config.horizons)
     if save_results:
         run_directory = create_run_directory(
             config,
             Path(output_directory) if output_directory is not None
             else Path(__file__).resolve().parent / "reports" / "runs",
             prepared,
+            source_run=saved_run.directory if saved_run else None,
         )
 
     for model_factory, hyperparam_grid in entries:
         print(f"=== {model_factory.model_name} ===")
-        hyperparam_grid = dict(hyperparam_grid)
-        if issubclass(model_factory, TorchForecastModel):
-            if device is not None:
-                hyperparam_grid["device"] = [device]
-            if max_epochs is not None:
-                hyperparam_grid["max_epochs"] = [max_epochs]
+        if saved_run is not None:
+            saved_model = saved_run.models[model_cli_name(model_factory)]
+            model = saved_model.model
+            if isinstance(model, TorchForecastModel) and device is not None:
+                model.device = resolve_device(device)
+                model.network.to(model.device)
+            print(f"Loaded fitted model; prediction device: {getattr(model, 'device', 'cpu')}")
+            x_train, _ = final_training_data(model, prepared)
+        else:
+            hyperparam_grid = dict(hyperparam_grid)
+            if issubclass(model_factory, TorchForecastModel):
+                if device is not None:
+                    hyperparam_grid["device"] = [device]
+                if max_epochs is not None:
+                    hyperparam_grid["max_epochs"] = [max_epochs]
 
-        fit_started = perf_counter()
-        search_result: SearchResult = search_hyperparameters(
-            model_factory, hyperparam_grid, experiment
-        )
+            fit_started = perf_counter()
+            search_result: SearchResult = search_hyperparameters(
+                model_factory, hyperparam_grid, experiment
+            )
 
-        # Start a fresh fit on all pre-test data, using the selected epoch budget.
-        # Reusing the search model would leave out its validation-period training data.
-        model: Model = model_factory(**search_result.best_config)
-        training_device = getattr(model, "device", "cpu")
-        using_gpu = str(training_device).split(":")[0] in {"cuda", "xpu"}
-        print(f"Model training/prediction: {'GPU' if using_gpu else 'CPU'} ({training_device})")
-        x_train, y_train = final_training_data(model, prepared)
-        model.train(x_train, y_train)
-        fit_times[model.get_model_name()] = perf_counter() - fit_started
+            # Refit from scratch on all pre-test data with the selected epoch budget.
+            model: Model = model_factory(**search_result.best_config)
+            print(f"Model training/prediction device: {getattr(model, 'device', 'cpu')}")
+            x_train, y_train = final_training_data(model, prepared)
+            model.train(x_train, y_train)
+            fit_times[model.get_model_name()] = perf_counter() - fit_started
 
         y_pred: np.ndarray = predict_test(model, prepared)
         # Model outputs may be price changes or AEMO residuals. Convert them to
         # actual RRP units before comparing with prices and common baselines.
         predicted_price: np.ndarray = reconstruct_price_forecast(
-            experiment.test_df, y_pred, experiment.config
+            prepared.test_df, y_pred, config
         )
 
         result = evaluate(model, y_test_price, predicted_price)
 
         results.append(result)
-        if run_directory is not None:
+        if run_directory is not None and saved_run is not None:
+            save_model_evaluation(run_directory, saved_model, prepared.test_df, predicted_price, result)
+        elif run_directory is not None:
             save_model_run(
                 run_directory,
                 model,
                 search_result,
-                experiment.test_df,
+                prepared.test_df,
                 predicted_price,
                 result,
                 extra_columns=(config.aemo_forecast_column,),
@@ -451,7 +486,8 @@ def main(
 
         present_results(results, prepared, shap_importances, show=plot_results,
                         directory=run_directory, details=plot_details,
-                        top_features=shap_top_features, sequence_3d=shap_3d, seed=config.random_seed)
+                        top_features=shap_top_features, sequence_3d=shap_3d,
+                        seed=config.random_seed if plot_seed is None else plot_seed)
 
 
 def run_cli(arguments: Sequence[str] | None = None) -> None:
@@ -464,7 +500,8 @@ def run_cli(arguments: Sequence[str] | None = None) -> None:
             walk_forward_folds=cli_args.folds,
             selection_metric=cli_args.metric,
             random_seed=cli_args.seed,
-        ),
+        ) if cli_args.load_run is None else None,
+        load_run=cli_args.load_run,
         output_directory=cli_args.output_dir,
         save_results=cli_args.save,
         force_refresh=cli_args.refresh,
@@ -477,6 +514,7 @@ def run_cli(arguments: Sequence[str] | None = None) -> None:
         shap_top_features=cli_args.shap_top_features,
         shap_3d=cli_args.shap_3d,
         plot_results=cli_args.plot,
+        plot_seed=cli_args.plot_seed,
         plot_details=cli_args.plot_details,
         verbose=cli_args.verbose,
     )

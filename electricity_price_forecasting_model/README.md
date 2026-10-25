@@ -14,13 +14,12 @@ configured in the root script and coordinated by `pipeline/`.
 | `layers/` | PyTorch networks and component layers |
 | `layers/gnn_layers/` | Cross-region graph encoder used during feature preparation |
 
-`experiment_config/` currently contains only a placeholder. The active
-experiment configuration is `EXPERIMENT` in [`main.py`](../main.py).
+Configure experiments through `EXPERIMENT` in [`main.py`](../main.py).
 
 ## Wrappers and networks
 
 A network is a `torch.nn.Module` that maps a batch of features or observed
-windows to forecasts. It does not download data, split datasets or score tests.
+windows to forecasts.
 
 A wrapper exposes the common `Model` interface. Neural wrappers inherit
 [`TorchForecastModel`](../pipeline/neural.py), which supplies fitted
