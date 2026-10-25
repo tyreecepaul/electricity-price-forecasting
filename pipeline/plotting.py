@@ -206,7 +206,7 @@ def plot_sequence_surface(sequence_importance, model_name, *, maximum=None):
 def plot_price_regimes(results, prepared):
     """Show where each model improves or deteriorates relative to persistence."""
     import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize
+    from matplotlib.colors import TwoSlopeNorm
 
     scores = compare_models_by_price_regime(results, prepared)
     values = scores["mae_vs_persistence_pct"].unstack("regime")
@@ -214,11 +214,8 @@ def plot_price_regimes(results, prepared):
     finite = values.to_numpy()[np.isfinite(values.to_numpy())]
     limit = max(float(np.abs(finite).max()), 1.0) if finite.size else 1.0
     figure, axis = plt.subplots(figsize=(11, max(3.5, 0.5 * len(values))), layout="constrained")
-    # Symmetric limits put zero at the midpoint with ordinary linear scaling.
-    # TwoSlopeNorm's infinite inverse outside [0, 1] breaks Matplotlib's hover
-    # precision calculation for cells at the upper colour limit.
     image = axis.imshow(np.ma.masked_invalid(values.to_numpy()), cmap="RdYlGn",
-                        norm=Normalize(vmin=-limit, vmax=limit), aspect="auto")
+                        norm=TwoSlopeNorm(vmin=-limit, vcenter=0, vmax=limit), aspect="auto")
     axis.set(xticks=np.arange(len(values.columns)), xticklabels=[c.split(" (")[0] for c in values.columns],
              yticks=np.arange(len(values)), yticklabels=values.index,
              title="MAE improvement over persistence by actual price regime")

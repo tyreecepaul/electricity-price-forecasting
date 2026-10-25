@@ -18,7 +18,7 @@ from pipeline.contracts import forecast_array
 from pipeline.experiment_pipeline import HOUR_HORIZONS
 
 
-def create_run_directory(config, output_directory: Path, prepared=None, *, source_run=None) -> Path:
+def create_run_directory(config, output_directory: Path, prepared=None) -> Path:
     """Create a unique run folder and record configuration/data/environment provenance."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = output_directory / f"{stamp}-{uuid4().hex[:8]}"
@@ -32,8 +32,6 @@ def create_run_directory(config, output_directory: Path, prepared=None, *, sourc
             for name in ("numpy", "pandas", "torch", "scikit-learn", "xgboost")
         },
     }
-    if source_run is not None:
-        manifest["source_run"] = str(Path(source_run).resolve())
     diagnostics = getattr(prepared, "embedding_diagnostics", None)
     if diagnostics:
         manifest["graph_embedding_diagnostics"] = diagnostics
@@ -85,22 +83,6 @@ def save_model_run(
     (path / "model.json").write_text(
         json.dumps(metadata, indent=2, default=str), encoding="utf-8"
     )
-    save_forecasts(path, test_df, predictions, result, extra_columns)
-    # Move a copy to CPU so the bundle can load without a GPU while the caller's
-    # live model retains its original device and state.
-    portable = copy.deepcopy(model)
-    if getattr(portable, "network", None) is not None:
-        import torch
-
-        portable.network.cpu()
-        portable.device = torch.device("cpu")
-    # Includes fitted imputers, scalers, target transform and temporal context.
-    joblib.dump(portable, path / "model.joblib")
-
-
-def save_forecasts(path, test_df, predictions, result, extra_columns=()):
-    """Write the same aligned forecast tables for fitted and reloaded models."""
-    predictions = forecast_array(predictions, len(test_df), len(HOUR_HORIZONS))
     rows = test_df[
         [
             c
@@ -128,20 +110,16 @@ def save_forecasts(path, test_df, predictions, result, extra_columns=()):
     rows = pd.concat(parts, ignore_index=True)
     rows.pivot(index=["region", "settlement_date"], columns="horizon_minutes", values="prediction_rrp").to_csv(path / "forecast_curves.csv")
     rows.to_csv(path / "predictions.csv", index=False)
+    # Move a copy to CPU so the bundle can load without a GPU while the caller's
+    # live model retains its original device and state.
+    portable = copy.deepcopy(model)
+    if getattr(portable, "network", None) is not None:
+        import torch
 
-
-def save_model_evaluation(directory, saved_model, test_df, predictions, result):
-    """Save new reports while keeping the original fitted bundle untouched."""
-    path = directory / saved_model.directory.name
-    path.mkdir(exist_ok=False)
-    metadata = {
-        "model": result.model_name,
-        "source_model": str(saved_model.directory / "model.joblib"),
-        "best_config": saved_model.metadata["best_config"],
-        "test_metrics": result.metrics,
-    }
-    (path / "evaluation.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    save_forecasts(path, test_df, predictions, result)
+        portable.network.cpu()
+        portable.device = torch.device("cpu")
+    # Includes fitted imputers, scalers, target transform and temporal context.
+    joblib.dump(portable, path / "model.joblib")
 
 
 def save_run_summary(directory, results):

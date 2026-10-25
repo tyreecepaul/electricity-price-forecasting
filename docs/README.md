@@ -13,19 +13,20 @@
 - [Research workspace](../model_research/README.md): individual experiments.
 - [Git and GitHub conventions](git-and-github-conventions.md): branches and reviews.
 
-The proposal and timeline record the original research plan. See the technical
-guides for the current implementation.
+The technical guides describe the current 5-to-60-minute forecasting pipeline.
+The proposal and timeline below record earlier plans; their proposed horizons,
+architectures and metrics are not a description of the current implementation.
 
 ## Coursework files and status
 
 | Location | Purpose and status |
 | --- | --- |
-| [Proposal source](proposal/G12_proposal_XXXXXXXXXXX.tex) | Group proposal describing the original research plan |
+| [Proposal source](proposal/G12_proposal_XXXXXXXXXXX.tex) | Group proposal describing the original research plan; the filename still contains a submission placeholder |
 | [Proposal PDF](proposal/G12_proposal_XXXXXXXXXXX.pdf) | Existing compiled proposal |
 | [Report source](report/report.tex) | Course template with example authors and instructions; not a completed project report |
 | [Report PDF](report/report.pdf) | Existing template PDF |
 | [Earlier proposal skeleton](../reports/proposal/proposal.tex) | Blank starting document with placeholder names and sections |
-| [Timeline](timeline/timeline.typ) | Initial sprint plan for weeks 6–9 |
+| [Timeline](timeline/timeline.typ) | Initial sprint plan for weeks 6–9, not a current progress tracker |
 
 Proposal/report sources reference bibliography files that are not currently
 tracked alongside them (`ref.bib` or `references.bib`). Restore the appropriate

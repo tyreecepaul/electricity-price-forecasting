@@ -6,6 +6,7 @@
 
 Use `dev` as the integration branch and the base for normal pull requests.
 The repository also has `main`; target it only for an agreed release.
+There is no `production` branch in the current checkout.
 
 Start new work from an up-to-date `dev`:
 
@@ -18,6 +19,7 @@ git switch -c feat/36-experiment-pipeline
 Use `type/issue-number-short-summary` where an issue exists. Valid types
 include `feat`, `fix`, `docs`, `refactor`, `test`, `chore` and `spike`.
 Use lowercase summaries and include the issue number in the PR description.
+Existing branches without issue numbers do not need renaming.
 
 ## Commits and pull requests
 
@@ -44,8 +46,9 @@ locally and inspect any GitHub status checks; do not assume automation has
 verified the change. Avoid unrelated edits, generated caches and secrets.
 
 The team's review convention is one approval for integration work and two
-for releases. Authors should not approve their own PRs and should respond to
-actionable review comments.
+for releases. These are workflow expectations; this document does not assert
+that branch protection currently enforces them. Authors should not approve
+their own PRs and should respond to actionable review comments.
 
 ## Keeping a branch current
 

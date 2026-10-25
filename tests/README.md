@@ -8,8 +8,9 @@ Run commands from the repository root, in the environment used for the project:
 python -m pytest -q
 ```
 
-The default command collects tests in `tests/`. Run research tests explicitly
-by passing their paths.
+`pytest.ini` sets `testpaths = tests`, adds the repository root to Python's
+import path and disables pytest's cache provider. Research tests outside this
+directory are not collected by the default command.
 
 ## Run focused checks
 
@@ -22,9 +23,6 @@ python -m pytest -q tests/test_mlp_model.py
 
 # Graph features and leakage checks
 python -m pytest -q tests/test_graph_embedding.py
-
-# Saved-run evaluation
-python -m pytest -q tests/test_saved_runs.py
 
 # Stop at the first failure and show a shorter traceback
 python -m pytest -x --tb=short
@@ -41,12 +39,17 @@ python -m pytest -x --tb=short
 | Evaluation | Shared masks, persistence/P5MIN baselines and price regimes |
 | Training and artifacts | Checkpoint restoration, progress display and saved-model round trips |
 
-Tests use small synthetic datasets and temporary output directories.
+Tests use small synthetic datasets and temporary output directories rather than
+running the default multi-year AEMO experiment. Some lower-level tests use scalar
+targets deliberately; integration tests exercise the twelve-output pipeline.
 
 Neural and graph checks require a working PyTorch installation. An unavailable
 GPU does not prevent CPU checks, but an installed PyTorch package with broken
 DLL dependencies can fail during collection. Check the pytest summary for
 skips as well as failures.
+
+`test_transformer_model.py` is currently empty, so it provides no dedicated
+Transformer architecture coverage.
 
 ## Add a regression test
 
@@ -55,3 +58,6 @@ target ordering, forecast alignment, training-only preprocessing and inference
 context. Use `tmp_path` for saved outputs and mock ingestion when testing data
 preparation. Add a regression case for a bug, then run the affected tests and
 any shared integration tests it could influence.
+
+Experiments and numerical findings belong in saved run artifacts or the project
+report; this directory's README is a guide to verification.

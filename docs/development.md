@@ -12,7 +12,6 @@
 | `pipeline/graph_embedding/` | Learned cross-region input features |
 | `pipeline/experiment_pipeline.py` | Caching, twelve-horizon targets and validation splits |
 | `pipeline/model_data.py` | Row/sequence training inputs and test alignment |
-| `pipeline/saved_runs.py` | Read-only loading and compatibility checks for saved-run evaluation |
 | `pipeline/neural.py`, `pipeline/training.py` | Shared PyTorch lifecycle and checkpoint selection |
 | `pipeline/contracts.py`, `pipeline/evaluation.py` | Shape validation, scoring and baseline comparisons |
 | `pipeline/attribution.py`, `pipeline/plotting.py`, `pipeline/artifacts.py` | Interpretation, figures and saved runs |
@@ -23,7 +22,8 @@
 ## Data contracts
 
 Raw ingestion returns `Data` with separate `prices`, `region_summary`,
-`interconnectors` and `p5min` tables. `Data.df` aliases the raw price table.
+`interconnectors` and `p5min` tables. Its compatibility property `df` aliases
+the price table; it is not the engineered feature frame.
 
 `prepare_experiment(config)` returns `ExperimentData` containing the prepared
 data, chronological fit/validation frames and held-out test frame.
@@ -37,7 +37,7 @@ In the current twelve-horizon experiment:
 | `train_timeline`, `test_timeline` | Full observed feature timelines, including unlabeled context rows |
 | `target_rrp_hXX` | Actual future price at the corresponding lead |
 | `target_hXX` | Label on the configured target scale at that lead |
-| `target`, `target_rrp` | Labels for the longest lead |
+| `target`, `target_rrp` | Compatibility columns for the longest lead |
 | Model predictions | NumPy array of shape `(N, 12)`, ordered by `forecast_horizons` |
 
 Targets are matched by exact region/timestamp. Training vectors are embargoed
@@ -46,8 +46,9 @@ Lower-level adapters and model wrappers also support scalar targets for
 isolated experiments; the main experiment requires all twelve leads.
 
 For feature families, see the [feature reference](../pipeline/preprocessing/feature_list.txt).
-The exact inputs for a run are in `prepared.features`. The preprocessing
-`example_usage.py` demonstrates the lower-level scalar adapter.
+The exact inputs for a run are in `prepared.features`; the reference is not a
+configuration file. The preprocessing `example_usage.py` demonstrates the
+lower-level scalar adapter, rather than the complete experiment entry point.
 
 ## Add a model
 
@@ -67,7 +68,8 @@ The exact inputs for a run are in `prepared.features`. The preprocessing
    then run the model through the shared selection/refit/evaluation path.
 
 Do not load or split data inside the wrapper. Tuning injects experiment
-horizons and target settings into constructors that accept them.
+horizons and target settings into constructors that accept them, so these
+do not need duplicate entries in the hyperparameter grid.
 
 For a neural model, implement `_build_network(input_size)` and construct the
 output head with `self.output_size`. Forward passes return
