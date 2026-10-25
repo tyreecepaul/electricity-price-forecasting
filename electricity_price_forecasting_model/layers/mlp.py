@@ -14,6 +14,7 @@ class FeedForwardNetwork(nn.Module):
         n_features: int,
         hidden_sizes: Sequence[int],
         dropout: float | Sequence[float],
+        output_size: int = 1,
     ) -> None:
         super().__init__()
 
@@ -39,7 +40,7 @@ class FeedForwardNetwork(nn.Module):
             if dropout_rate > 0:
                 layers.append(nn.Dropout(dropout_rate))
             input_size = hidden_size
-        layers.append(nn.Linear(input_size, 1))
+        layers.append(nn.Linear(input_size, output_size))
         self.network = nn.Sequential(*layers)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:

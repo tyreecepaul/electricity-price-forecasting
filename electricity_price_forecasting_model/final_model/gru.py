@@ -73,5 +73,5 @@ class GRUModel(TorchForecastModel):
 
     def _build_network(self, input_size: int) -> nn.Module:
         return GRUNetwork(
-            input_size, self.hidden_size, self.num_layers, dropout=self.dropout
+            input_size, self.hidden_size, self.num_layers, output_size=self.output_size, dropout=self.dropout
         )

@@ -1,4 +1,4 @@
-"""Shared preprocessing, training and inference for single-horizon neural models."""
+"""Shared preprocessing, training and inference for neural forecasting models."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from tqdm.auto import tqdm
 
 from pipeline.contracts import (
     METRIC_NAMES,
-    forecast_vector,
+    forecast_array,
     score_forecast,
     temporal_metadata,
     validate_context,
@@ -34,6 +34,14 @@ from pipeline.preprocessing import (
 )
 from pipeline.sequences import ContextSequenceDataset, SequenceDataset
 from pipeline.training import TorchEarlyStoppingTrainer
+
+
+def resolve_device(device=None) -> torch.device:
+    """Use an explicit device or prefer an available CUDA/Intel GPU."""
+    if device is None or str(device) == "auto":
+        device = ("cuda" if torch.cuda.is_available() else
+                  "xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "cpu")
+    return torch.device(device)
 
 
 def set_random_seed(seed: int) -> None:
@@ -56,11 +64,13 @@ class TorchForecastModel(Model):
 
     Subclasses define architecture parameters and implement ``_build_network``.
     Row networks receive (batch, features); sequence networks receive
-    (batch, lookback, features). Both return (batch, 1) transformed targets.
+    (batch, lookback, features). DataFrame targets configure multiple outputs;
+    Series targets retain the original single-output behavior.
     Public ``predict`` converts these back to the experiment's target units.
     """
 
     sequence_length = 1
+    output_size = 1
     show_progress: bool = True
 
     def __init__(
@@ -121,13 +131,12 @@ class TorchForecastModel(Model):
         self.scheduler_gamma = scheduler_gamma
         self.mixed_precision = mixed_precision
         self.interval_minutes = interval_minutes
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = resolve_device(device)
         self.network = None
         self.preprocessor = None
         self.target_transformer = None
         self.feature_columns = []
+        self.target_columns = None
         self.feature_medians = None
         self.training_context = None
         self.context_frame = None
@@ -140,7 +149,11 @@ class TorchForecastModel(Model):
 
     @abstractmethod
     def _build_network(self, input_size: int) -> nn.Module:
-        """Return an untrained network producing one scalar per sample."""
+        """Return an untrained network with self.output_size outputs per sample."""
+
+    def _forecast_values(self, values, expected_rows):
+        """Preserve the horizon axis while keeping single-output predictions 1D."""
+        return forecast_array(values, expected_rows, self.output_size)
 
     def _set_random_seed(self):
         set_random_seed(self.random_seed)
@@ -181,7 +194,7 @@ class TorchForecastModel(Model):
             validate_timeline(metadata, self.interval_minutes)
 
     def gradient_shap(self, features, reference_features, *, history=None, positions=None,
-                      sample_size=1024, baseline_size=16, n_samples=128, device=None):
+                      sample_size=1024, baseline_size=16, n_samples=128, device=None, target=None):
         """Signed learned-target contributions relative to sampled training inputs.
 
         Uses complete observed windows for sequence references and no added noise.
@@ -190,9 +203,14 @@ class TorchForecastModel(Model):
         draws; CPU retains float64. The fitted network is never modified.
         The residual compares attribution sums with prediction minus the mean
         reference prediction; Monte Carlo approximation need not sum exactly.
+        Multi-output models require target: the zero-based output column index.
         """
         if self.network is None or n_samples < 1 or baseline_size < 1 or features.empty or (sample_size is not None and sample_size < 1):
             raise ValueError("A fitted model, nonempty inputs and positive integration settings are required")
+        if target is None and self.output_size > 1:
+            raise ValueError("Multi-output GradientShap requires a target output index")
+        if target is not None and (not isinstance(target, (int, np.integer)) or not 0 <= target < self.output_size):
+            raise ValueError(f"target must be an output index from 0 to {self.output_size - 1}")
         length = self.sequence_length if self.requires_sequence else 1
         if len(reference_features) < length:
             raise ValueError("Training references must contain at least one complete input window")
@@ -246,10 +264,13 @@ class TorchForecastModel(Model):
             [device.index if device.index is not None else backend.current_device()]
             if backend is not None else []
         )
+        output_index = target
         target = self.target_transformer
 
         def output(x):
-            z = network(x).reshape(-1) * target.std_ + target.mean_
+            values = network(x)
+            values = values[:, output_index] if output_index is not None else values.reshape(-1)
+            z = values * target.std_ + target.mean_
             return target.scale * torch.sinh(z)
 
         explainer = GradientShap(output)
@@ -294,6 +315,11 @@ class TorchForecastModel(Model):
             reference_prediction = torch.cat([output(batch).cpu() for batch in baselines.split(batch_size)]).mean().item()
             difference = torch.cat([output(batch).cpu() for batch in inputs.split(batch_size)]).numpy() - reference_prediction
         result.attrs["device"] = str(inputs.device)
+        result.attrs["target_index"] = output_index
+        result.attrs["target_column"] = (
+            self.target_columns[output_index]
+            if output_index is not None and self.target_columns is not None else None
+        )
         result.attrs["reference_prediction"] = reference_prediction
         result.attrs["baseline_count"] = len(baselines)
         result.attrs["completeness_residual"] = difference - totals.sum(axis=1)
@@ -325,10 +351,18 @@ class TorchForecastModel(Model):
             raise ValueError("Validation inputs and targets must both be provided")
         if self.requires_sequence:
             self._check_timeline(x_train)
-        target = pd.to_numeric(y_train, errors="coerce").replace(
-            [np.inf, -np.inf], np.nan
-        )
-        valid = target.notna().to_numpy(copy=True)
+        if isinstance(y_train, pd.DataFrame):
+            if y_train.shape[1] == 0 or y_train.columns.has_duplicates:
+                raise ValueError("Target columns must be nonempty and unique")
+            target = self._numeric_frame(y_train)
+            self.output_size = target.shape[1]
+            self.target_columns = list(target.columns)
+            valid = target.notna().all(axis=1).to_numpy(copy=True)
+        else:
+            target = pd.to_numeric(y_train, errors="coerce").replace([np.inf, -np.inf], np.nan)
+            self.output_size = 1
+            self.target_columns = None
+            valid = target.notna().to_numpy(copy=True)
         if not valid.any():
             raise ValueError("y_train contains no finite targets")
 
@@ -346,7 +380,7 @@ class TorchForecastModel(Model):
         inputs = self._inputs(x_train)
         targets = torch.tensor(
             self.target_transformer.transform(target), dtype=torch.float32
-        ).reshape(-1, 1)
+        ).reshape(len(target), self.output_size)
         if self.requires_sequence:
             dataset = SequenceDataset(
                 inputs, targets, self.sequence_length, target_mask=valid
@@ -376,10 +410,16 @@ class TorchForecastModel(Model):
                         self.context_frame, x_validation, self.interval_minutes
                     )
             validation_inputs = self._inputs(x_validation)
-            validation_actual = pd.to_numeric(y_validation, errors="coerce").to_numpy(
-                dtype=float
-            )
-            if not np.isfinite(validation_actual).any():
+            if self.target_columns is not None:
+                if not isinstance(y_validation, pd.DataFrame) or list(y_validation.columns) != self.target_columns:
+                    raise ValueError("Validation target columns must match training target columns in order")
+                validation_actual = self._numeric_frame(y_validation).to_numpy(dtype=float)
+                if self.output_size == 1:
+                    validation_actual = validation_actual[:, 0]
+            else:
+                validation_actual = pd.to_numeric(y_validation, errors="coerce").to_numpy(dtype=float)
+            finite = np.isfinite(validation_actual)
+            if not (finite.all(axis=1) if finite.ndim == 2 else finite).any():
                 raise ValueError("y_validation contains no finite targets")
 
         self._set_random_seed()
@@ -483,7 +523,7 @@ class TorchForecastModel(Model):
         if self.network is None:
             raise RuntimeError("train() must be called before predict()")
         if not len(inputs):
-            return np.empty(0, dtype=float)
+            return np.empty((0, self.output_size) if self.output_size > 1 else 0, dtype=float)
         dataset = (
             ContextSequenceDataset(
                 self.training_context if history is None else history,
@@ -501,7 +541,7 @@ class TorchForecastModel(Model):
         with torch.inference_mode():
             for (xb,) in loader:
                 batches.append(
-                    forecast_vector(
+                    self._forecast_values(
                         self.network(xb.to(self.device)).cpu().numpy(), len(xb)
                     )
                 )
@@ -513,15 +553,17 @@ class TorchForecastModel(Model):
             self._predict_transformed(inputs)
         )
         valid = np.isfinite(actual)
+        if valid.ndim == 2:
+            valid = valid.all(axis=1)
         if not np.isfinite(prediction[valid]).all():
             raise RuntimeError("Validation produced non-finite predictions")
-        return score_forecast(actual[valid], prediction[valid], metric)
+        return score_forecast(actual[valid].ravel(), prediction[valid].ravel(), metric)
 
     def _validation_mae(self, inputs, actual):
         return self._validation_score(inputs, actual, "mae")
 
     def predict(self, x_test, *, history=None):
-        """Return one target-scale forecast per current row, in the same order.
+        """Return target-scale forecasts in row and fitted target-column order.
 
         For sequence models, history contains observed feature rows immediately
         preceding x_test. Pass it explicitly for successive prediction chunks;
@@ -531,7 +573,7 @@ class TorchForecastModel(Model):
         if self.network is None or self.preprocessor is None:
             raise RuntimeError("train() must be called before predict()")
         if x_test.empty:
-            return np.empty(0, dtype=float)
+            return np.empty((0, self.output_size) if self.output_size > 1 else 0, dtype=float)
         history_inputs = None
         if self.requires_sequence:
             self._check_timeline(x_test)
@@ -547,6 +589,6 @@ class TorchForecastModel(Model):
                 else self._inputs(context.tail(count))
             )
         transformed = self._predict_transformed(self._inputs(x_test), history_inputs)
-        return forecast_vector(
+        return self._forecast_values(
             self.target_transformer.inverse_transform(transformed), len(x_test)
         )

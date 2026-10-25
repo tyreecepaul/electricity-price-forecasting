@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from electricity_price_forecasting_model.layers.gnn_layers.encoder import (
     SpatioTemporalGraphEncoder,
 )
-from pipeline.neural import set_random_seed
+from pipeline.neural import resolve_device, set_random_seed
 from pipeline.preprocessing.adapters import LearnedFeatures, add_model_target
 from pipeline.preprocessing.scaling import (
     NumericPreprocessor,
@@ -48,9 +48,7 @@ class GraphEmbedder:
     def __init__(self, config: GraphEmbeddingConfig, *, interval_minutes: int = 5):
         self.config = config
         self.interval_minutes = interval_minutes
-        self.device = torch.device(
-            config.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = resolve_device(config.device)
         self.network = None
         self.regions: tuple[str, ...] = ()
         self.node_features: tuple[str, ...] = ()
@@ -147,8 +145,6 @@ class GraphEmbedder:
 
         self.regions, self.node_features = panel.regions, panel.node_features
         nodes = len(panel.regions)
-        # The control arm has no cross-region edges, so it gets no edge inputs,
-        # but it shares the spread objective: only message passing differs.
         links = edge_pairs(panel.regions)
         self._linked = np.zeros((nodes, nodes), dtype=bool)
         for a, b, _ in links:
@@ -157,7 +153,6 @@ class GraphEmbedder:
         self.edge_features_used = []
         if (
             config.edge_features
-            and config.adjacency_mode == "nem"
             and panel.edges is not None
         ):
             observed = panel.edges[train_rows][:, self._linked]
@@ -229,7 +224,7 @@ class GraphEmbedder:
         set_random_seed(config.random_seed)
         self.network = SpatioTemporalGraphEncoder(
             len(panel.node_features),
-            torch.tensor(adjacency(panel.regions, config.adjacency_mode)),
+            torch.tensor(adjacency(panel.regions)),
             hidden_dim=config.hidden_dim,
             embedding_dim=config.embedding_dim,
             num_heads=config.num_heads,

@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from pipeline.tuning import search_hyperparameters
+from pipeline.experiment_pipeline import HOUR_HORIZONS
+from pipeline.contracts import target_columns
 
 
 def experiment_fixture():
@@ -32,7 +34,12 @@ def experiment_fixture():
             "feature_b": [9.0, 10.0],
         }
     )
+    for frame in (fit_df, validation_df):
+        for horizon in HOUR_HORIZONS:
+            frame[f"target_h{horizon:02d}"] = frame["target"]
     return SimpleNamespace(
+        prepared=SimpleNamespace(forecast_horizons=HOUR_HORIZONS,
+                                 embedding_columns=["feature_b"], features=["feature_a", "feature_b"]),
         fit_df=fit_df,
         validation_df=validation_df,
         features=["feature_a", "feature_b"],
@@ -55,7 +62,7 @@ def test_search_uses_only_selected_features_and_configured_target():
 
         def predict(self, x_validation):
             observed["x_validation"] = x_validation.copy()
-            return experiment.validation_df["target"].to_numpy()
+            return experiment.validation_df[target_columns(HOUR_HORIZONS)].to_numpy()
 
         def get_model_name(self):
             return self.model_name
@@ -71,9 +78,9 @@ def test_search_uses_only_selected_features_and_configured_target():
         observed["x_train"],
         experiment.fit_df[experiment.features],
     )
-    pd.testing.assert_series_equal(
+    pd.testing.assert_frame_equal(
         observed["y_train"],
-        experiment.fit_df["target"],
+        experiment.fit_df[target_columns(HOUR_HORIZONS)],
     )
     pd.testing.assert_frame_equal(
         observed["x_validation"],
@@ -120,7 +127,7 @@ def test_search_rejects_partial_non_finite_predictions():
             pass
 
         def predict(self, x_validation):
-            return np.array([experiment.validation_df["target"].iloc[0], np.nan])
+            return np.tile([[experiment.validation_df["target"].iloc[0]], [np.nan]], (1, 12))
 
         def get_model_name(self):
             return self.model_name
@@ -156,7 +163,7 @@ def test_search_uses_selected_early_stopping_epoch_for_final_config():
             return SimpleNamespace(best_epoch=7)
 
         def predict(self, x_validation):
-            return experiment.validation_df["target"].to_numpy()
+            return experiment.validation_df[target_columns(HOUR_HORIZONS)].to_numpy()
 
         def get_model_name(self):
             return self.model_name

@@ -8,6 +8,23 @@ import pandas as pd
 METRIC_NAMES = ("mae", "rmse", "sse", "median_ae")
 
 
+def target_columns(horizons=()) -> list[str]:
+    """Names of scalar or explicitly ordered multi-horizon training labels."""
+    return [f"target_h{h:02d}" for h in horizons] if horizons else ["target"]
+
+
+def target_values(frame: pd.DataFrame, horizons=()) -> pd.Series | pd.DataFrame:
+    columns = target_columns(horizons)
+    return frame[columns] if horizons else frame[columns[0]]
+
+
+def price_values(frame: pd.DataFrame, horizons=()) -> np.ndarray:
+    """Select actual prices with the same vector/matrix contract as predictions."""
+    columns = [f"target_rrp_h{h:02d}" for h in horizons]
+    values = frame[columns] if horizons else frame["target_rrp"]
+    return values.to_numpy(dtype=float)
+
+
 def forecast_vector(values, expected_rows: int, *, name="predictions") -> np.ndarray:
     """Normalize single-horizon outputs to (N,) and reject other dimensions.
 
@@ -22,6 +39,16 @@ def forecast_vector(values, expected_rows: int, *, name="predictions") -> np.nda
             f"{name} must have shape ({expected_rows},) or ({expected_rows}, 1); "
             f"got {array.shape}"
         )
+    return array
+
+
+def forecast_array(values, expected_rows: int, outputs: int = 1, *, name="predictions") -> np.ndarray:
+    """Validate forecast shape without broadcasting or losing the horizon axis."""
+    if outputs == 1:
+        return forecast_vector(values, expected_rows, name=name)
+    array = np.asarray(values, dtype=float)
+    if array.shape != (expected_rows, outputs):
+        raise ValueError(f"{name} must have shape ({expected_rows}, {outputs}); got {array.shape}")
     return array
 
 

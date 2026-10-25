@@ -46,7 +46,7 @@ class GraphEmbeddingConfig:
     """
 
     regions: tuple[str, ...] = DEFAULT_REGIONS
-    adjacency_mode: Literal["nem", "identity"] = "nem"
+    adjacency_mode: Literal["nem"] = "nem"
     edge_features: bool = True
     spread_loss_weight: float = 0.5
     node_features: tuple[str, ...] | None = None
@@ -72,8 +72,8 @@ class GraphEmbeddingConfig:
     def __post_init__(self) -> None:
         if len(self.regions) < 2 or len(set(self.regions)) != len(self.regions):
             raise ValueError("regions must name at least two distinct nodes")
-        if self.adjacency_mode not in {"nem", "identity"}:
-            raise ValueError("adjacency_mode must be 'nem' or 'identity'")
+        if self.adjacency_mode != "nem":
+            raise ValueError("The encoder requires the NEM interconnector graph")
         sizes = (
             self.sequence_length,
             self.embedding_dim,

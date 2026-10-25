@@ -1,4 +1,8 @@
-"""Minimal examples for the shared NEM preprocessing pipeline."""
+"""Lower-level scalar preprocessing examples, separate from main.py's 12 targets.
+
+Executing this file loads data with the ingestion defaults. For the supported
+multi-horizon experiment, use main.py and docs/experiments.md instead.
+"""
 
 from pipeline.preprocessing import (
     NumericPreprocessor,

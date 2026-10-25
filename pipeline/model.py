@@ -19,15 +19,15 @@ class Model(ABC):
         pass
 
     @abstractmethod
-    def train(self, x_train: pd.DataFrame, y_train: pd.Series) -> None:
+    def train(self, x_train: pd.DataFrame, y_train: pd.Series | pd.DataFrame) -> None:
         pass
 
     def train_with_validation(
         self,
         x_train: pd.DataFrame,
-        y_train: pd.Series,
+        y_train: pd.Series | pd.DataFrame,
         x_validation: pd.DataFrame,
-        y_validation: pd.Series,
+        y_validation: pd.Series | pd.DataFrame,
     ) -> TrainingResult | None:
         """Train with optional validation support.
 

@@ -36,7 +36,6 @@ class MLPModel(TorchForecastModel):
         interval_minutes: int = 5,
     ) -> None:
         hidden_sizes = tuple(int(size) for size in hidden_sizes)
-        hidden_sizes = tuple(int(size) for size in hidden_sizes)
         if not hidden_sizes or any(size <= 0 for size in hidden_sizes):
             raise ValueError("hidden_sizes must contain positive integers")
         rates = (
@@ -71,4 +70,4 @@ class MLPModel(TorchForecastModel):
         )
 
     def _build_network(self, input_size: int) -> nn.Module:
-        return FeedForwardNetwork(input_size, self.hidden_sizes, self.dropout)
+        return FeedForwardNetwork(input_size, self.hidden_sizes, self.dropout, output_size=self.output_size)

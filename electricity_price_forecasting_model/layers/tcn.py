@@ -59,7 +59,7 @@ class TemporalBlock(nn.Module):
         return self.activation(features + self.shortcut(inputs))
 
 class TCNNetwork(nn.Module):
-    """Produce one forecast from the final timestamp of a feature window"""
+    """Produce horizon forecasts from the final timestamp of a feature window."""
 
     def __init__(
         self,
@@ -67,7 +67,8 @@ class TCNNetwork(nn.Module):
         channels: int = 16,
         kernel_size: int = 3,
         num_blocks: int = 2,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        output_size: int = 1,
     ) -> None:
         """Build residual blocks with dilations 1, 2, 4 and so on"""
         super().__init__()
@@ -89,16 +90,22 @@ class TCNNetwork(nn.Module):
             ) for index in range(num_blocks)
         ]
         self.blocks: nn.Sequential = nn.Sequential(*blocks)
-        self.output: nn.Linear = nn.Linear(channels, 1)
+        self.output: nn.Linear = nn.Linear(channels, output_size)
 
     def temporal_features(self, inputs: torch.Tensor) -> torch.Tensor:
         """Return features shaped (batch, channels, time)"""
         if inputs.ndim != 3 or inputs.shape[-1] != self.input_size:
             raise ValueError("Expected (batch, time, input_size)")
+        # Attribution batches can be views starting at an unaligned storage
+        # offset. The residual 1x1 convolution sees that view without padding,
+        # so give oneDNN an aligned allocation while preserving autograd.
+        # contiguous() alone can return the same unaligned contiguous view.
+        if inputs.device.type == "xpu" and inputs.data_ptr() % 64:
+            inputs = inputs.clone(memory_format=torch.contiguous_format)
         channels_first: torch.Tensor = inputs.transpose(1,2)
         return self.blocks(channels_first)
     
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Return one scalar forecast per input window"""
+        """Return one vector of forecasts per input window."""
         latest_features: torch.Tensor = self.temporal_features(inputs)[:, :, -1]
         return self.output(latest_features)

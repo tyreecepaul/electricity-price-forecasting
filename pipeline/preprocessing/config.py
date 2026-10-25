@@ -24,8 +24,8 @@ class FeatureConfig:
     delta_intervals: tuple[int, ...] = (1, 3, 6, 12)
     rolling_windows: tuple[int, ...] = (6, 12, 36, 288)
 
-    # AEMO P5MIN future trajectory to expose as known-future covariates.
-    p5min_horizons_minutes: tuple[int, ...] = (5, 10, 15, 30, 60)
+    # Full AEMO P5MIN trajectory: all twelve leads, available at the forecast origin.
+    p5min_horizons_minutes: tuple[int, ...] = tuple(range(5, 61, 5))
 
     include_calendar: bool = True
     include_interconnector_utilisation: bool = True

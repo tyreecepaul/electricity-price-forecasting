@@ -133,7 +133,6 @@ def test_adjacency_matches_nem_topology():
 
     reordered = adjacency(("TAS1", "VIC1", "QLD1"))
     np.testing.assert_array_equal(reordered, [[1, 1, 0], [1, 1, 0], [0, 0, 1]])
-    np.testing.assert_array_equal(adjacency(mode="identity"), np.eye(5))
 
 
 def test_panel_keeps_missing_intervals_and_matches_single_region_targets():
@@ -207,15 +206,6 @@ def test_embeddings_cover_every_interval_and_are_deterministic():
     pd.testing.assert_frame_equal(learned.test, again.test)
 
 
-def test_identity_graph_changes_the_embedding():
-    train, test = split_features()
-    graph = embed(train, test)
-    control = embed(train, test, replace(EMBEDDING, adjacency_mode="identity"))
-    assert not np.allclose(
-        graph.test[graph.columns].to_numpy(), control.test[control.columns].to_numpy()
-    )
-
-
 def test_embedding_ignores_later_features():
     train, _ = split_features()
     train = add_model_target(train, "change", HORIZON)
@@ -271,12 +261,13 @@ def test_stage_adds_features_without_changing_scored_rows():
 
     config = ExperimentConfig(
         region="VIC1",
-        horizon_minutes=HORIZON,
         validation_fraction=0.2,
         model_features=FEATURES,
         feature_config=FEATURE_CONFIG,
         graph_embedding=EMBEDDING,
     )
+    from pipeline.experiment_pipeline import with_forecast_horizons
+    staged = with_forecast_horizons(staged, config)
     fit, validation = chronological_validation_split(staged.train_df, config)
     experiment = ExperimentData(config, staged, fit, validation, staged.test_df)
     check_embedding_precedes_validation(experiment)
@@ -295,13 +286,14 @@ def test_validation_overlapping_the_encoder_fit_is_rejected():
     staged = prepared_data(lambda train, test: embed(train, test))
     config = ExperimentConfig(
         region="VIC1",
-        horizon_minutes=HORIZON,
         validation_fraction=0.2,
         model_features=FEATURES,
         feature_config=FEATURE_CONFIG,
         graph_embedding=EMBEDDING,
         walk_forward_folds=3,
     )
+    from pipeline.experiment_pipeline import with_forecast_horizons
+    staged = with_forecast_horizons(staged, config)
     fit, validation = chronological_validation_split(staged.train_df, config)
     experiment = ExperimentData(config, staged, fit, validation, staged.test_df)
     with pytest.raises(ValueError, match="fit_fraction"):
@@ -313,28 +305,157 @@ def test_validation_overlapping_the_encoder_fit_is_rejected():
         check_embedding_precedes_validation(two_folds)
 
 
-def test_cache_identity_changes_only_when_the_stage_is_enabled(monkeypatch):
+def test_default_experiment_prepares_graph_features_and_twelve_targets(monkeypatch, tmp_path):
+    import pipeline.experiment_pipeline as pipeline
+    import pipeline.graph_embedding.embedder as encoder
+
+    train, test = split(raw_frame())
+    calls = []
+
+    def prepare_local(**kwargs):
+        return prepare_model_data(**kwargs, train_data=train, test_data=test)
+
+    def small_encoder(train_features, test_features, **kwargs):
+        calls.append((kwargs["horizon"], kwargs["config"].adjacency_mode))
+        kwargs["config"] = replace(EMBEDDING, max_epochs=1)
+        return compute_graph_embeddings(train_features, test_features, **kwargs)
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", prepare_local)
+    monkeypatch.setattr(encoder, "compute_graph_embeddings", small_encoder)
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path, graph_embedding=EMBEDDING,
+                              feature_config=FEATURE_CONFIG, validation_fraction=0.2)
+    experiment = pipeline.prepare_experiment(config)
+
+    assert calls == [(60, "nem")]
+    assert experiment.config.horizon_minutes == 60
+    assert experiment.prepared.y_train.shape[1] == 12
+    assert experiment.prepared.y_test.shape[1] == 12
+    assert set(EMBEDDING.embedding_columns) <= set(experiment.features)
+    assert all(not name.startswith("target") for name in experiment.features)
+    model = GRUModel(sequence_length=3, hidden_size=4, max_epochs=1,
+                     batch_size=16, device="cpu")
+    model.train(*final_training_data(model, experiment.prepared))
+    predictions = predict_test(model, experiment.prepared)
+    assert predictions.shape == experiment.prepared.y_test.shape
+    assert np.isfinite(predictions).all()
+
+    def unexpected_preparation(*args, **kwargs):
+        pytest.fail("A cached rerun rebuilt data, targets, or the graph encoder")
+
+    with monkeypatch.context() as rerun:
+        rerun.setattr(pipeline, "prepare_model_data", unexpected_preparation)
+        rerun.setattr(pipeline, "with_forecast_horizons", unexpected_preparation)
+        rerun.setattr(encoder, "compute_graph_embeddings", unexpected_preparation)
+        cached = pipeline.prepare_experiment(config)
+    assert calls == [(60, "nem")]
+    pd.testing.assert_frame_equal(cached.prepared.X_test, experiment.prepared.X_test)
+
+    # The config alone disables the encoder while keeping identical twelve-output labels.
+    plain_config = replace(config, graph_embedding=None)
+    plain = pipeline.prepare_experiment(plain_config)
+    assert calls == [(60, "nem")]
+    assert plain.prepared.embedding_columns == []
+    assert not any(name.startswith("gnn_emb_") for name in plain.features)
+    pd.testing.assert_frame_equal(plain.prepared.y_test, experiment.prepared.y_test)
+    assert plain.config.horizons == config.horizons
+    plain_model = GRUModel(sequence_length=3, hidden_size=4, max_epochs=1,
+                           batch_size=16, device="cpu")
+    plain_model.train(*final_training_data(plain_model, plain.prepared))
+    assert predict_test(plain_model, plain.prepared).shape == plain.prepared.y_test.shape
+    assert plain_config.cache_file != config.cache_file
+    with monkeypatch.context() as rerun:
+        rerun.setattr(pipeline, "prepare_model_data", unexpected_preparation)
+        rerun.setattr(pipeline, "with_forecast_horizons", unexpected_preparation)
+        pipeline.prepare_experiment(plain_config)
+    assert calls == [(60, "nem")]
+
+
+def test_cache_identity_tracks_the_graph_feature_setting(monkeypatch):
     import pipeline.experiment_pipeline as module
-
     monkeypatch.setattr(module, "source_fingerprint", lambda: "source")
-    plain = ExperimentConfig(region="VIC1")
-    staged = replace(plain, graph_embedding=EMBEDDING)
-    control = replace(
-        plain, graph_embedding=replace(EMBEDDING, adjacency_mode="identity")
-    )
+    standard = ExperimentConfig(region="VIC1")
+    tuned = replace(standard, graph_embedding=EMBEDDING)
+    assert "gnn" in standard.cache_file.name
+    assert "graph_embedding" in standard.cache_metadata()
+    assert standard.cache_file != tuned.cache_file
+    assert standard.graph_embedding_cache_file != tuned.graph_embedding_cache_file
+    other_region = replace(tuned, region="NSW1")
+    assert tuned.cache_file != other_region.cache_file
+    assert tuned.graph_embedding_cache_file == other_region.graph_embedding_cache_file
+    assert tuned.graph_embedding_cache_metadata() == other_region.graph_embedding_cache_metadata()
+    plain = replace(standard, graph_embedding=None)
+    assert plain.cache_file != standard.cache_file
+    assert plain.cache_metadata()["graph_embedding"] is None
+    assert "graph_source_fingerprint" not in plain.cache_metadata()
 
-    assert "gnn" not in plain.cache_file.name
-    assert "graph_embedding" not in plain.cache_metadata()
-    assert len({plain.cache_file, staged.cache_file, control.cache_file}) == 3
-    assert staged.graph_embedding_cache_file != control.graph_embedding_cache_file
-    # One encoder fit serves every region's experiment.
-    other_region = replace(staged, region="NSW1")
-    assert staged.cache_file != other_region.cache_file
-    assert staged.graph_embedding_cache_file == other_region.graph_embedding_cache_file
-    assert (
-        staged.graph_embedding_cache_metadata()
-        == other_region.graph_embedding_cache_metadata()
-    )
+
+def test_existing_feature_cache_is_upgraded_without_rebuilding(monkeypatch, tmp_path):
+    import joblib
+    import pipeline.experiment_pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "source_fingerprint", lambda: "unchanged")
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+                              graph_embedding=None, feature_config=FEATURE_CONFIG)
+    joblib.dump({"metadata": config.cache_metadata(), "data": prepared_data()}, config.cache_file)
+
+    def unexpected_rebuild(*args, **kwargs):
+        pytest.fail("Upgrading a compatible cache rebuilt source features or the encoder")
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", unexpected_rebuild)
+    monkeypatch.setattr(pipeline, "graph_embedding_stage", unexpected_rebuild)
+    upgraded = pipeline.load_prepared_data(config)
+    assert upgraded.forecast_horizons == config.horizons
+    assert upgraded.y_test.shape[1] == 12
+    assert joblib.load(config.cache_file)["data"].forecast_horizons == config.horizons
+    monkeypatch.setattr(pipeline, "with_forecast_horizons", unexpected_rebuild)
+    cached = pipeline.load_prepared_data(config)
+    pd.testing.assert_frame_equal(upgraded.y_test, cached.y_test)
+
+
+def test_prepared_cache_rebuilds_only_for_refresh_or_changed_inputs(monkeypatch, tmp_path):
+    import pipeline.experiment_pipeline as pipeline
+
+    fingerprint = ["original"]
+    monkeypatch.setattr(pipeline, "source_fingerprint", lambda: fingerprint[0])
+    builds = []
+
+    def prepare_local(**kwargs):
+        builds.append(kwargs)
+        return prepared_data()
+
+    monkeypatch.setattr(pipeline, "prepare_model_data", prepare_local)
+    config = ExperimentConfig(region="VIC1", cache_directory=tmp_path,
+                              graph_embedding=None, feature_config=FEATURE_CONFIG)
+    pipeline.load_prepared_data(config)
+    pipeline.load_prepared_data(config)
+    assert len(builds) == 1
+    pipeline.load_prepared_data(config, force_refresh=True)
+    assert len(builds) == 2
+    fingerprint[0] = "revised-inputs"
+    pipeline.load_prepared_data(config)
+    assert len(builds) == 3
+
+
+def test_experiment_rejects_removed_modes_and_missing_graph_features(monkeypatch):
+    import pipeline.experiment_pipeline as pipeline
+
+    for kwargs in ({"forecast_mode": "single"}, {"horizon_minutes": 30}):
+        with pytest.raises(TypeError):
+            ExperimentConfig(**kwargs)
+    with pytest.raises(ValueError, match="GraphEmbeddingConfig or None"):
+        ExperimentConfig(graph_embedding=False)
+    with pytest.raises(ValueError, match="interconnector graph"):
+        ExperimentConfig(graph_embedding=replace(EMBEDDING, adjacency_mode="identity"))
+    monkeypatch.setattr(pipeline, "load_prepared_data", lambda *args, **kwargs: prepared_data())
+    with pytest.raises(ValueError, match="all GNN embedding"):
+        pipeline.prepare_experiment(ExperimentConfig())
+
+
+def test_model_data_rejects_removed_forecast_layout():
+    from pipeline.model_data import final_training_data
+
+    with pytest.raises(ValueError, match="all twelve horizons"):
+        final_training_data(GRUModel(device="cpu"), prepared_data())
 
 
 def linked_panel():
@@ -439,7 +560,6 @@ def test_edges_and_spread_objective_are_recorded_and_change_the_embedding():
     plain = embed(
         train, test, replace(EMBEDDING, edge_features=False, spread_loss_weight=0.0)
     )
-    control = embed(train, test, replace(EMBEDDING, adjacency_mode="identity"))
 
     assert full.diagnostics["edge_features"] == ["flow", "utilisation", "headroom"]
     assert set(full.diagnostics["spread_validation_mae"]) == {
@@ -450,9 +570,6 @@ def test_edges_and_spread_objective_are_recorded_and_change_the_embedding():
     }
     assert plain.diagnostics["edge_features"] == []
     assert plain.diagnostics["spread_validation_mae"] == {}
-    # The control keeps the spread objective but has no edges to describe.
-    assert control.diagnostics["edge_features"] == []
-    assert control.diagnostics["spread_loss_weight"] == 0.5
     assert not np.allclose(
         full.test[full.columns].to_numpy(), plain.test[plain.columns].to_numpy()
     )

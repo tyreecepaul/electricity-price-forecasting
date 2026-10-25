@@ -1,6 +1,5 @@
 """TCN forecaster using the shared PyTorch training pipline"""
 from __future__ import annotations
-from random import random
 
 from torch import nn
 from electricity_price_forecasting_model.layers.tcn import TCNNetwork
@@ -88,5 +87,6 @@ class TCNModel(TorchForecastModel):
             channels=self.channels,
             kernel_size=self.kernel_size,
             num_blocks=self.num_blocks,
-            dropout=self.dropout
+            dropout=self.dropout,
+            output_size=self.output_size,
         )

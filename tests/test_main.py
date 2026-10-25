@@ -58,15 +58,15 @@ def test_cli_selects_lstm():
     assert [factory.model_name for factory, _ in selected] == ["LSTM"]
 
 
-def test_cli_selects_arima_with_the_experiment_horizon_and_target():
+def test_cli_selects_arima_without_duplicating_experiment_settings():
     module = load_main_module()
 
     selected = module.select_model_registry(["arima"])
 
     assert [factory.model_name for factory, _ in selected] == ["ARIMA"]
     grid = selected[0][1]
-    assert grid["horizon_minutes"] == [module.EXPERIMENT.horizon_minutes]
-    assert grid["target_type"] == [module.EXPERIMENT.target_type]
+    # Tuning supplies these from the active experiment for every candidate.
+    assert {"horizon_minutes", "target_type", "forecast_horizons"}.isdisjoint(grid)
 
 
 def test_cli_selects_tcn_with_the_initial_comparison_window():
@@ -81,7 +81,6 @@ def test_cli_selects_tcn_with_the_initial_comparison_window():
     assert grid["channels"] == [16]
     assert grid["kernel_size"] == [3]
     assert grid["num_blocks"] == [2]
-    assert all(len(values) == 1 for values in grid.values())
     assert module.parse_args(["--models", "tcn"]).models == ["tcn"]
 
 
@@ -112,32 +111,39 @@ def test_cli_parses_multiple_models():
     assert args.models == ["mlp", "gru", "xgboost"]
 
 
-def test_cli_graph_embedding_choices():
+def test_standard_defaults_include_graph_features_and_all_horizons():
     module = load_main_module()
+    from pipeline.experiment_pipeline import ExperimentConfig, HOUR_HORIZONS
 
-    assert module.parse_args([]).graph_embedding == "per-model"
-    assert module.parse_args(["--graph-embedding"]).graph_embedding == "nem"
-    assert module.parse_args(["--graph-embedding", "none"]).graph_embedding == "none"
-    assert module.parse_args(["--graph-embedding", "--models", "lstm"]).models == ["lstm"]
-    assert module.EXPERIMENT.graph_embedding is None
-    assert module.GRAPH_EMBEDDING_CHOICES["none"] is None
-    assert module.GRAPH_EMBEDDING_CHOICES["nem"].adjacency_mode == "nem"
-    assert module.GRAPH_EMBEDDING_CHOICES["identity"].adjacency_mode == "identity"
+    for config in (ExperimentConfig(), module.EXPERIMENT):
+        assert config.forecast_horizons == HOUR_HORIZONS
+        assert config.graph_embedding.adjacency_mode == "nem"
 
 
-def test_each_model_is_assigned_its_graph_embedding():
+def test_cli_rejects_removed_configuration_switches():
+    import pytest
     module = load_main_module()
-    assigned = {
-        factory.model_name: embedding
-        for factory, embedding in module.MODEL_GRAPH_EMBEDDING.items()
-    }
-
-    assert assigned["XGBoost"].adjacency_mode == "identity"
-    assert assigned["LSTM"].adjacency_mode == "nem"
-    assert "GRU" not in assigned
+    for arguments in (["--graph-embedding", "none"], ["--forecast-mode", "single"],
+                      ["--horizon-minutes", "30"], ["--sweep"]):
+        with pytest.raises(SystemExit):
+            module.parse_args(arguments)
+    assert module.parse_args(["--shap-horizons", "5", "60"]).shap_horizons == [5, 60]
 
 
-def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
+def test_cli_passes_standard_defaults_to_the_runner(monkeypatch):
+    module = load_main_module()
+    calls = []
+    monkeypatch.setattr(module, "main", lambda models, **kwargs: calls.append((models, kwargs)))
+    module.run_cli(["--models", "tcn", "--device", "xpu"])
+    models, options = calls[0]
+    assert models == ["tcn"]
+    assert options["config"].forecast_horizons == tuple(range(5, 61, 5))
+    assert options["config"].graph_embedding.adjacency_mode == "nem"
+    assert options["device"] == "xpu"
+    assert "graph_embeddings" not in options
+
+
+def run_fake_models(module, monkeypatch, **arguments):
     """Run ``main`` with stub models and report what each one was given."""
 
     def fake_model(name):
@@ -153,16 +159,16 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
         return Fake
 
     first, second, third = (fake_model(name) for name in ("First", "Second", "Third"))
-    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
+    nem = module.EXPERIMENT.graph_embedding
     prepared_configs, searches = [], []
 
-    def fake_prepare(config):
+    def fake_prepare(config, **kwargs):
         prepared_configs.append(config.graph_embedding)
-        rows = (test_rows or {}).get(config.graph_embedding, 2)
+        rows = 2
         test_df = pd.DataFrame(
             {
                 "settlement_date": pd.date_range("2025-01-01", periods=rows, freq="5min"),
-                "target_rrp": 1.0,
+                **{f"target_rrp_h{h:02d}": 1.0 for h in module.HOUR_HORIZONS},
             }
         )
         return SimpleNamespace(prepared="prepared", test_df=test_df, config=config)
@@ -171,10 +177,8 @@ def run_fake_models(module, monkeypatch, *, test_rows=None, **arguments):
         searches.append((factory.model_name, experiment.config.graph_embedding, grid))
         return SimpleNamespace(best_config={"depth": 1})
 
-    registry = [(first, {"depth": [1]}), (second, {"depth": [1]}), (third, {"depth": [1]})]
+    registry = [(first, {"depth": [1]}), (second, {"depth": [1, 2]}), (third, {"depth": [1]})]
     monkeypatch.setattr(module, "MODEL_REGISTRY", registry)
-    monkeypatch.setattr(module, "MODEL_GRAPH_EMBEDDING", {first: nem, third: nem})
-    monkeypatch.setattr(module, "SWEEP_GRIDS", {second: {"depth": [1, 2]}})
     monkeypatch.setattr(module, "prepare_experiment", fake_prepare)
     monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
@@ -198,27 +202,30 @@ def test_models_sharing_an_embedding_share_one_prepared_experiment(monkeypatch):
 
     nem, prepared, searches = run_fake_models(module, monkeypatch)
 
-    assert prepared == [nem, None]
+    assert prepared == [nem]
     assert [(name, embedding) for name, embedding, _ in searches] == [
         ("First", nem),
+        ("Second", nem),
         ("Third", nem),
-        ("Second", None),
     ]
 
 
-def test_explicit_embedding_overrides_the_per_model_map(monkeypatch):
+def test_graph_features_can_be_disabled_only_through_experiment_config(monkeypatch):
+    from dataclasses import replace
+
     module = load_main_module()
-
-    _, prepared, searches = run_fake_models(module, monkeypatch, graph_embeddings={})
-
+    _, prepared, searches = run_fake_models(
+        module, monkeypatch,
+        config=replace(module.EXPERIMENT, graph_embedding=None), device="xpu",
+    )
     assert prepared == [None]
-    assert [name for name, _, _ in searches] == ["First", "Second", "Third"]
+    assert all(embedding is None for _, embedding, _ in searches)
 
 
-def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
+def test_main_passes_each_registry_grid_to_tuning(monkeypatch):
     module = load_main_module()
 
-    _, _, searches = run_fake_models(module, monkeypatch, sweep=True)
+    _, _, searches = run_fake_models(module, monkeypatch)
     grids = {name: grid for name, _, grid in searches}
 
     assert grids == {
@@ -226,39 +233,24 @@ def test_sweep_replaces_only_grids_that_have_one(monkeypatch):
         "Second": {"depth": [1, 2]},
         "Third": {"depth": [1]},
     }
-    lstm = next(f for f, _ in load_main_module().MODEL_REGISTRY if f.model_name == "LSTM")
-    registry_grid = next(g for f, g in load_main_module().MODEL_REGISTRY if f is lstm)
-    sweep_grid = next(
-        g for f, g in load_main_module().SWEEP_GRIDS.items() if f.model_name == "LSTM"
-    )
-    assert set(sweep_grid) >= set(registry_grid)
-    assert len(sweep_grid["sequence_length"]) > 1 and len(sweep_grid["hidden_size"]) > 1
-
-
-def test_embedding_variants_must_score_the_same_test_rows(monkeypatch):
-    import pytest
-
-    module = load_main_module()
-    nem = module.GRAPH_EMBEDDING_CHOICES["nem"]
-
-    with pytest.raises(RuntimeError, match="different test rows"):
-        run_fake_models(module, monkeypatch, test_rows={nem: 2, None: 3})
 
 
 def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch):
     module = load_main_module()
 
     train_x = pd.DataFrame({"feature_a": [1.0, 2.0], "feature_b": [3.0, 4.0]})
-    train_y = pd.Series([0.5, -0.5], name="target")
+    train_y = pd.DataFrame({f"target_h{h:02d}": [0.5, -0.5] for h in module.HOUR_HORIZONS})
     test_x = pd.DataFrame({"feature_a": [5.0, 6.0], "feature_b": [7.0, 8.0]})
     test_df = pd.DataFrame(
         {
             "rrp": [100.0, 200.0],
-            "target_rrp": [110.0, 190.0],
+            **{f"target_rrp_h{h:02d}": [110.0, 190.0] for h in module.HOUR_HORIZONS},
             "target": [10.0, -10.0],
         }
     )
     prepared = SimpleNamespace(
+        forecast_horizons=module.HOUR_HORIZONS,
+        embedding_columns=["feature_b"],
         X_train=train_x,
         y_train=train_y,
         X_test=test_x,
@@ -286,7 +278,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
 
         def predict(self, x_test):
             pd.testing.assert_frame_equal(x_test, test_x)
-            return np.array([5.0, -5.0])
+            return np.tile([[5.0], [-5.0]], (1, 12))
 
         def get_model_name(self):
             return self.model_name
@@ -300,8 +292,8 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     def fake_reconstruct(frame, predicted_target, config):
         assert frame is test_df
         assert config is module.EXPERIMENT
-        np.testing.assert_array_equal(predicted_target, [5.0, -5.0])
-        return frame["rrp"].to_numpy() + predicted_target
+        np.testing.assert_array_equal(predicted_target, np.tile([[5.0], [-5.0]], (1, 12)))
+        return frame["rrp"].to_numpy()[:, None] + predicted_target
 
     evaluated = {}
 
@@ -311,7 +303,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
         return SimpleNamespace(model_name=model.get_model_name())
 
     monkeypatch.setattr(module, "MODEL_REGISTRY", [(FakeModel, {"depth": [1]})])
-    monkeypatch.setattr(module, "prepare_experiment", lambda config: experiment)
+    monkeypatch.setattr(module, "prepare_experiment", lambda config, **kwargs: experiment)
     monkeypatch.setattr(module, "print_experiment_summary", lambda value: None)
     monkeypatch.setattr(module, "search_hyperparameters", fake_search)
     monkeypatch.setattr(module, "reconstruct_price_forecast", fake_reconstruct)
@@ -321,7 +313,7 @@ def test_main_uses_prepared_features_target_and_reconstructed_prices(monkeypatch
     module.main(save_results=False)
 
     pd.testing.assert_frame_equal(trained["x"], train_x)
-    pd.testing.assert_series_equal(trained["y"], train_y)
+    pd.testing.assert_frame_equal(trained["y"], train_y)
     assert trained["depth"] == 1
-    np.testing.assert_array_equal(evaluated["actual"], [110.0, 190.0])
-    np.testing.assert_array_equal(evaluated["predicted"], [105.0, 195.0])
+    np.testing.assert_array_equal(evaluated["actual"], np.tile([[110.0], [190.0]], (1, 12)))
+    np.testing.assert_array_equal(evaluated["predicted"], np.tile([[105.0], [195.0]], (1, 12)))

@@ -1,55 +1,54 @@
-### Main Training Directory
+# Model implementations
 
+[Project README](../README.md) · [Development guide](../docs/development.md)
+
+This package contains the models used by `main.py`. Training runs are
+configured in the root script and coordinated by `pipeline/`.
+
+## Layout
+
+| Directory | Role |
+| --- | --- |
+| `final_model/` | MLP, GRU, LSTM, TCN and Transformer wrappers |
+| `baseline_models/` | XGBoost and ARIMA wrappers |
+| `layers/` | PyTorch networks and component layers |
+| `layers/gnn_layers/` | Cross-region graph encoder used during feature preparation |
+
+`experiment_config/` currently contains only a placeholder. The active
+experiment configuration is `EXPERIMENT` in [`main.py`](../main.py).
+
+## Wrappers and networks
+
+A network is a `torch.nn.Module` that maps a batch of features or observed
+windows to forecasts. It does not download data, split datasets or score tests.
+
+A wrapper exposes the common `Model` interface. Neural wrappers inherit
+[`TorchForecastModel`](../pipeline/neural.py), which supplies fitted
+preprocessing, target transforms, training, early stopping and inference.
+Network construction belongs in `_build_network(input_size)`.
+
+The main experiment passes twelve target columns. Construct neural output
+heads with `self.output_size`; row networks receive `(batch, features)` and
+sequence networks receive `(batch, lookback, features)`. Both return
+`(batch, self.output_size)`. Public predictions have shape `(N, 12)` and
+remain on the experiment's target scale until price reconstruction.
+
+XGBoost shares one horizon-conditioned ensemble across the twelve leads.
+ARIMA forecasts the leads from one fitted price process. The graph encoder
+adds `gnn_emb_*` inputs; it is separate from the downstream forecasters.
+
+## Add or run a model
+
+Follow the [model-development steps](../docs/development.md#add-a-model), then
+register the class and parameter grid in `main.py`. Use the shared experiment
+data rather than adding a separate ingestion or evaluation loop.
+
+From the repository root:
+
+```bash
+python main.py --models mlp --epochs 1 --skip-shap
+python -m pytest -q tests/test_mlp_model.py tests/test_model_pipeline.py
 ```
-.
-├── layers # all layers including modules and models to be used in final model
-├── final_model # final model class composed of layers and modules
-├── baseline_models # non-deep learning models for baseline comparison
-├── experiment_config # main training executable to run final model with any feature engineering scripts
-├── README.md 
-```
 
-
-## Model Layout (Image for Paper)
-
-
-## Layers
-
-Using Pytorch we can easily create modules or layers for the final model and implementation.
-Within the layers directory there should only be your designed layer in the form of a child class of nn.Module.
-As an example heres chapos MLP:
-```
-class NeuralNetwork(nn.Module):
-    def __init__(self, n_features):
-        super().__init__()
-
-        self.network = nn.Sequential(
-            nn.Linear(n_features, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-            nn.Dropout(0.2),
-
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
-            nn.Dropout(0.15),
-
-            nn.Linear(64, 32),
-            nn.GELU(),
-
-            nn.Linear(32, 1),
-        )
-
-    def forward(self, x):
-        return self.network(x)
-```
-All training and evaluation should be done in Experiment Config, preferably run within the final model as a test with the new module.
-
-## Final Model
-
-Final model will utilize the layers designed by us and constructed together in a our chosen manner.
-
-## Experiment outline
-
-
-- Our experiment parameters, setup, features selected etc
+The experiment command can build data and GNN caches on its first run;
+`--epochs` limits only the deep forecaster.

@@ -45,9 +45,9 @@ class PreparedModelData:
     """
 
     X_train: pd.DataFrame
-    y_train: pd.Series
+    y_train: pd.Series | pd.DataFrame
     X_test: pd.DataFrame
-    y_test: pd.Series
+    y_test: pd.Series | pd.DataFrame
     train_df: pd.DataFrame
     test_df: pd.DataFrame
     features: list[str]
@@ -56,6 +56,8 @@ class PreparedModelData:
     target_type: str
     train_timeline: pd.DataFrame | None = None
     test_timeline: pd.DataFrame | None = None
+    # Populated with twelve horizons after cached feature preparation.
+    forecast_horizons: tuple[int, ...] = ()
     embedding_columns: list[str] = field(default_factory=list)
     embedding_fit_end: pd.Timestamp | None = None
     embedding_diagnostics: dict | None = None

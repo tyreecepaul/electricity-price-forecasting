@@ -31,7 +31,7 @@ import pandas as pd
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from pipeline.contracts import (
-    forecast_vector,
+    forecast_array,
     temporal_metadata,
     validate_context,
     validate_timeline,
@@ -64,6 +64,7 @@ class ARIMAModel(Model):
         interval_minutes: int = 5,
         context_length: int = 2016,
         max_iter: int = 100,
+        forecast_horizons: tuple[int, ...] = (),
     ) -> None:
         for name, value in (("p", p), ("d", d), ("q", q)):
             if int(value) != value or value < 0:
@@ -105,6 +106,14 @@ class ARIMAModel(Model):
         self.target_type = target_type
         self.interval_minutes = int(interval_minutes)
         self.steps = self.horizon_minutes // self.interval_minutes
+        self.forecast_horizons = tuple(forecast_horizons)
+        if self.forecast_horizons:
+            if (tuple(sorted(set(self.forecast_horizons))) != self.forecast_horizons
+                    or any(h <= 0 or h % self.interval_minutes for h in self.forecast_horizons)
+                    or max(self.forecast_horizons) != self.horizon_minutes):
+                raise ValueError("forecast_horizons must be increasing intervals ending at horizon_minutes")
+            if series == "aemo_error":
+                raise ValueError("Multi-horizon ARIMA requires series='price'; AEMO residual series are horizon-specific")
         # Kalman burn-in before the first prediction; one week by default.
         self.context_length = max(int(context_length), self.steps + 1)
         self.max_iter = int(max_iter)
@@ -199,28 +208,27 @@ class ARIMAModel(Model):
         # AEMO's forecast of this interval was issued `steps` rows earlier.
         return price - self._shift(self._numeric(frame, self.aemo_column), self.steps)
 
-    def _check_targets(self, frame: pd.DataFrame, targets: pd.Series) -> None:
+    def _check_targets(self, frame: pd.DataFrame, targets: pd.Series | pd.DataFrame) -> None:
         """Fail loudly when horizon/target settings disagree with the experiment."""
         price = self._numeric(frame, "rrp")
-        future = self._shift(price, -self.steps)
-        if self.target_type == "change":
-            implied = future - price
-        elif self.target_type == "price":
-            implied = future
-        else:
-            implied = future - self._numeric(frame, self.aemo_column)
-        actual = pd.to_numeric(targets, errors="coerce").to_numpy(dtype=float)
-        comparable = np.isfinite(actual) & np.isfinite(implied)
-        if comparable.any() and not np.allclose(
-            implied[comparable], actual[comparable], rtol=1e-9, atol=1e-6
-        ):
-            raise ValueError(
-                "Training targets do not match horizon_minutes="
-                f"{self.horizon_minutes} and target_type={self.target_type!r}; "
-                "set them to the experiment's values"
-            )
+        horizons = self.forecast_horizons or (self.horizon_minutes,)
+        if self.forecast_horizons and (not isinstance(targets, pd.DataFrame) or targets.shape[1] != len(horizons)):
+            raise ValueError("Multi-horizon ARIMA needs one target column per declared horizon")
+        for position, horizon in enumerate(horizons):
+            future = self._shift(price, -(horizon // self.interval_minutes))
+            if self.target_type == "change":
+                implied = future - price
+            elif self.target_type == "price":
+                implied = future
+            else:
+                implied = future - self._numeric(frame, f"p5_h{horizon:02d}_rrp")
+            labels = targets.iloc[:, position] if isinstance(targets, pd.DataFrame) else targets
+            actual = pd.to_numeric(labels, errors="coerce").to_numpy(dtype=float)
+            comparable = np.isfinite(actual) & np.isfinite(implied)
+            if comparable.any() and not np.allclose(implied[comparable], actual[comparable], rtol=1e-9, atol=1e-6):
+                raise ValueError(f"Training targets do not match horizon_minutes={horizon} and target_type={self.target_type!r}")
 
-    def train(self, x_train: pd.DataFrame, y_train: pd.Series) -> None:
+    def train(self, x_train: pd.DataFrame, y_train: pd.Series | pd.DataFrame) -> None:
         if x_train.empty or len(x_train) != len(y_train):
             raise ValueError(
                 "Training inputs and targets must be nonempty and have equal lengths"
@@ -272,14 +280,15 @@ class ARIMAModel(Model):
         design = np.reshape(system["design"], (1, states))
         state_intercept = np.reshape(system["state_intercept"], states)
         obs_intercept = np.reshape(system["obs_intercept"], 1)
-        # E[a_{t+h} | t] = T^h a_{t|t} + sum_{j<h} T^j c, then y = Z a + d.
-        power = np.linalg.matrix_power(transition, self.steps)
-        drift = sum(
-            np.linalg.matrix_power(transition, j) @ state_intercept
-            for j in range(self.steps)
-        )
-        ahead = power @ filtered + drift[:, None]
-        return (design @ ahead + obs_intercept[:, None])[0]
+        # Filter once, then advance each origin's state without observing any
+        # future prices. All requested leads come from this same fitted model.
+        leads = {h // self.interval_minutes for h in (self.forecast_horizons or (self.horizon_minutes,))}
+        ahead, forecasts = filtered, []
+        for step in range(1, self.steps + 1):
+            ahead = transition @ ahead + state_intercept[:, None]
+            if step in leads:
+                forecasts.append((design @ ahead + obs_intercept[:, None])[0])
+        return np.column_stack(forecasts) if self.forecast_horizons else forecasts[0]
 
     def predict(self, x_test: pd.DataFrame, *, history=None) -> np.ndarray:
         """Forecast `horizon_minutes` ahead from every row, in target units.
@@ -290,7 +299,7 @@ class ARIMAModel(Model):
         if self.params is None:
             raise RuntimeError("train() must be called before predict()")
         if x_test.empty:
-            return np.empty(0, dtype=float)
+            return np.empty((0, len(self.forecast_horizons))) if self.forecast_horizons else np.empty(0, dtype=float)
         context = (self.context_frame if history is None else history).tail(
             self.context_length
         )
@@ -301,17 +310,19 @@ class ARIMAModel(Model):
         observed = self._forward(self._observed_series(combined))
         count = len(combined)
         residual = observed - self._seasonal_design(times, count) @ self.seasonal_coefficients
-        target_times = (
-            None if times is None else times + pd.Timedelta(minutes=self.horizon_minutes)
-        )
-        seasonal_ahead = (
-            self._seasonal_design(target_times, count) @ self.seasonal_coefficients
-        )
+        seasonal = [
+            self._seasonal_design(None if times is None else times + pd.Timedelta(minutes=h), count)
+            @ self.seasonal_coefficients
+            for h in (self.forecast_horizons or (self.horizon_minutes,))
+        ]
+        seasonal_ahead = np.column_stack(seasonal) if self.forecast_horizons else seasonal[0]
         forecast = self._inverse(self._state_forecast(residual) + seasonal_ahead)
 
         current = slice(count - len(x_test), count)
         price = self._numeric(combined, "rrp")[current]
         forecast = forecast[current]
+        if self.forecast_horizons:
+            price = price[:, None]
         if self.series == "aemo_error":
             aemo = self._numeric(combined, self.aemo_column)[current]
             missing = ~np.isfinite(aemo)
@@ -322,5 +333,7 @@ class ARIMAModel(Model):
         if self.target_type == "change":
             forecast = forecast - price
         elif self.target_type == "aemo_error":
-            forecast = forecast - self._numeric(x_test, self.aemo_column)
-        return forecast_vector(forecast, len(x_test))
+            aemo = (np.column_stack([self._numeric(x_test, f"p5_h{h:02d}_rrp") for h in self.forecast_horizons])
+                    if self.forecast_horizons else self._numeric(x_test, self.aemo_column))
+            forecast = forecast - aemo
+        return forecast_array(forecast, len(x_test), len(self.forecast_horizons) or 1)
