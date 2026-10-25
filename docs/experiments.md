@@ -49,7 +49,7 @@ python main.py --models lstm --skip-shap
 Registry grids use sequences of values; every run evaluates their Cartesian
 product. One value fixes a parameter; multiple values compare alternatives.
 Edit the grid directly in `MODEL_REGISTRY`, for example setting an LSTM entry's
-`"hidden_size": [16, 32, 64]` to compare three sizes. No extra flag is needed.
+`"hidden_size": [16, 32, 64]` to compare three sizes.
 Start with a small grid when checking a new model.
 
 One fold uses a chronological fit/validation holdout. Additional folds use
@@ -75,9 +75,7 @@ Raw caches live under `pipeline/data_cleaning/nemosis_cache/` and
 are cached under `model_cache/` by default.
 
 Matching reruns load complete prepared data, including targets and graph
-features, but still tune and train the forecasters. Cache checks include
-configuration, preparation code and local raw-cache file identities. Changing
-GNN settings selects a separate prepared cache. `--refresh` rebuilds prepared
+features, but still tune and train the forecasters. `--refresh` rebuilds prepared
 data and embeddings; ingestion may reuse downloaded files. It does not force
 a fresh download of upstream data.
 
@@ -131,3 +129,32 @@ Model bundles contain fitted preprocessing and, where needed, sequence
 context. Neural bundles are copied to CPU for portability. Graph-enabled
 forecasters still require the corresponding embedding inputs: the separate
 graph encoder is not bundled. Load only trusted joblib files.
+
+## Re-evaluate a saved run
+
+First save a training run with `--save`. Later, load its run directory:
+
+```bash
+python main.py --load-run reports/runs/<run-id> --skip-shap --plot
+python main.py --load-run reports/runs/<run-id> --models lstm --device cpu --save
+```
+
+Without `--models`, evaluation loads all fitted model bundles in that run.
+It uses the saved region, targets, features, GNN settings and seed.
+Use `--device` to select the neural models' inference device.
+
+Keep the complete saved-run directory and its matching prepared-data cache.
+Changes to preprocessing or raw data can make a saved run incompatible.
+
+This mode evaluates the original held-out test dataset without training.
+New raw data would require the separately fitted graph encoder.
+
+Plotting, verbosity and SHAP options remain available. Attribution is still
+computed unless `--skip-shap` is supplied. Training options `--refresh`,
+`--epochs`, `--folds`, `--metric` and `--seed` are rejected with `--load-run`.
+Use `--plot-seed 7` to select different forecast examples. It defaults to the
+saved experiment seed and changes only the example selection.
+
+With `--save`, a new directory contains predictions, metrics, plots and any
+requested SHAP outputs. The original models remain in the training-run
+directory; use that directory for later evaluations.
