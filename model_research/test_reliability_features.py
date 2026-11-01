@@ -1,6 +1,6 @@
 """Unit tests for the forecast reliability features.
 
-    pytest model_research/connor/test_reliability_features.py
+    pytest model_research/test_reliability_features.py
 """
 
 import sys

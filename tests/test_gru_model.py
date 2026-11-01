@@ -7,7 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn
 
-from electricity_price_forecasting_model.final_model.gru import (
+from src.final_model.gru import (
     GRUModel,
     GRUNetwork,
 )

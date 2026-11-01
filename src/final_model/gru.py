@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from torch import nn
 
-from electricity_price_forecasting_model.layers.gru import GRUNetwork
+from src.layers.gru import GRUNetwork
 from pipeline.neural import TorchForecastModel
 
 

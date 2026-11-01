@@ -10,7 +10,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
+from src.baseline_models.xgboost import XGBoostModel
 from pipeline.contracts import target_columns
 from pipeline.experiment_pipeline import (
     ExperimentConfig, HOUR_HORIZONS, with_forecast_reliability,

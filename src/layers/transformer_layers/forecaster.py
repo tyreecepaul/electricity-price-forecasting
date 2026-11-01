@@ -1,4 +1,4 @@
-from electricity_price_forecasting_model.layers.transformer_layers.transformerLayer import DecoderTransformer
+from src.layers.transformer_layers.transformerLayer import DecoderTransformer
 
 from torch import nn
 

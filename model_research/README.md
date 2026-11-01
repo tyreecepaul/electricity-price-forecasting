@@ -25,7 +25,7 @@ part of the shared comparison. See the [development guide](../docs/development.m
 Research checks can be run explicitly, for example:
 
 ```bash
-python -m pytest -q model_research/connor/test_reliability_features.py
+python -m pytest -q model_research/test_reliability_features.py
 ```
 
 They are separate from the default `tests/` suite. Other scripts may launch

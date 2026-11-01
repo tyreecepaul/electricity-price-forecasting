@@ -19,7 +19,7 @@ import pandas as pd
 
 from reliability_features import add_reliability_features, baseline_experiment  # also makes the repo importable
 
-from electricity_price_forecasting_model.final_model.mlp import MLPModel  # noqa: E402
+from src.final_model.mlp import MLPModel  # noqa: E402
 from main import MODEL_REGISTRY  # noqa: E402
 from pipeline.evaluation import evaluate  # noqa: E402
 from pipeline.experiment_pipeline import reconstruct_price_forecast  # noqa: E402

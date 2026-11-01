@@ -6,8 +6,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from electricity_price_forecasting_model.final_model.lstm import LSTMModel  # noqa: E402
-from electricity_price_forecasting_model.layers.lstm import LSTMNetwork  # noqa: E402
+from src.final_model.lstm import LSTMModel  # noqa: E402
+from src.layers.lstm import LSTMNetwork  # noqa: E402
 
 
 def test_lstm_network_shape_and_dropout():

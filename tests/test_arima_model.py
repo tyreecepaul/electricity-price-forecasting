@@ -11,7 +11,7 @@ pytest.importorskip("statsmodels")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX  # noqa: E402
 
-from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel  # noqa: E402
+from src.baseline_models.arima import ARIMAModel  # noqa: E402
 from pipeline.experiment_pipeline import (  # noqa: E402
     ExperimentConfig,
     ExperimentData,

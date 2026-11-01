@@ -16,9 +16,9 @@
 | `pipeline/neural.py`, `pipeline/training.py` | Shared PyTorch lifecycle and checkpoint selection |
 | `pipeline/contracts.py`, `pipeline/evaluation.py` | Shape validation, scoring and baseline comparisons |
 | `pipeline/attribution.py`, `pipeline/plotting.py`, `pipeline/artifacts.py` | Interpretation, figures and saved runs |
-| `electricity_price_forecasting_model/final_model/` | Deep-model wrappers |
-| `electricity_price_forecasting_model/baseline_models/` | XGBoost and ARIMA wrappers |
-| `electricity_price_forecasting_model/layers/` | Network implementations |
+| `src/final_model/` | Deep-model wrappers |
+| `src/baseline_models/` | XGBoost and ARIMA wrappers |
+| `src/layers/` | Network implementations |
 
 ## Data contracts
 

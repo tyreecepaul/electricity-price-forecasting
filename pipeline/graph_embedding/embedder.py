@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from electricity_price_forecasting_model.layers.gnn_layers.encoder import (
+from src.layers.gnn_layers.encoder import (
     SpatioTemporalGraphEncoder,
 )
 from pipeline.neural import resolve_device, set_random_seed

@@ -55,13 +55,13 @@ def progress_bars(monkeypatch: pytest.MonkeyPatch) -> list[RecordingProgress]:
 
 
 def load_network_type():
-    name = "electricity_price_forecasting_model.layers.tcn"
+    name = "src.layers.tcn"
     assert importlib.util.find_spec(name) is not None, "TCN network module is missing"
     return importlib.import_module(name).TCNNetwork
 
 
 def load_model_type():
-    name = "electricity_price_forecasting_model.final_model.tcn"
+    name = "src.final_model.tcn"
     assert importlib.util.find_spec(name) is not None, "TCN model module is missing"
     return importlib.import_module(name).TCNModel
 
@@ -273,7 +273,7 @@ def test_other_neural_models_use_shared_progress_setting(
     show_progress: bool,
 ) -> None:
     """The shared trainer respects the progress setting for other models too."""
-    from electricity_price_forecasting_model.final_model.gru import GRUModel
+    from src.final_model.gru import GRUModel
 
     model: GRUModel = GRUModel(
         sequence_length=3,

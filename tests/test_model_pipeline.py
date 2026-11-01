@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from electricity_price_forecasting_model.final_model.gru import GRUModel
-from electricity_price_forecasting_model.final_model.mlp import MLPModel
+from src.final_model.gru import GRUModel
+from src.final_model.mlp import MLPModel
 from pipeline.contracts import indexed_features, validate_timeline
 from pipeline.evaluation import evaluate
 from pipeline.experiment_pipeline import (
@@ -134,7 +134,7 @@ def test_explicit_context_is_invariant_to_prediction_chunks(experiment):
 
 
 def test_tcn_runs_through_selection_refit_and_test_alignment(experiment):
-    name = "electricity_price_forecasting_model.final_model.tcn"
+    name = "src.final_model.tcn"
     assert importlib.util.find_spec(name) is not None, "TCN model module is missing"
     TCNModel = importlib.import_module(name).TCNModel
     grid = {

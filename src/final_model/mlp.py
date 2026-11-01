@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from torch import nn
 
-from electricity_price_forecasting_model.layers.mlp import FeedForwardNetwork
+from src.layers.mlp import FeedForwardNetwork
 from pipeline.neural import TorchForecastModel
 
 

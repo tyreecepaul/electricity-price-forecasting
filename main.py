@@ -8,13 +8,13 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 
-from electricity_price_forecasting_model.final_model.transformer import TransformerModel
-from electricity_price_forecasting_model.final_model.gru import GRUModel
-from electricity_price_forecasting_model.final_model.lstm import LSTMModel
-from electricity_price_forecasting_model.final_model.mlp import MLPModel
-from electricity_price_forecasting_model.final_model.tcn import TCNModel
-from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
-from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
+from src.final_model.transformer import TransformerModel
+from src.final_model.gru import GRUModel
+from src.final_model.lstm import LSTMModel
+from src.final_model.mlp import MLPModel
+from src.final_model.tcn import TCNModel
+from src.baseline_models.arima import ARIMAModel
+from src.baseline_models.xgboost import XGBoostModel
 from pipeline.artifacts import create_run_directory, save_model_run, save_model_evaluation, save_run_summary
 from pipeline.attribution import ShapSummary, feature_lag_importance, importance_percent
 from pipeline.evaluation import ModelResult, compare_models_by_horizon, evaluate, print_evaluation_summary

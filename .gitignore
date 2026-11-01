@@ -1,46 +1,25 @@
+# Python
 .venv/
-notebooks/nemosis_cache/
-notebooks/nemseer_cache/
-data_cleaning/nemosis_cache/
-data_cleaning/nemseer_cache/
-data_cleaning/__pycache__/
 __pycache__/
-**/__pycache__/
 *.py[cod]
 .pytest_cache/
 pytest-cache-files-*/
+.ipynb_checkpoints/
 
-*.joblib
-reports/runs/
-tmp/pipeline-tests-*/
-
-.vscode/
+# Downloaded market data and prepared caches
+pipeline/data_cleaning/nemosis_cache/
+pipeline/data_cleaning/nemseer_cache/
+model_cache/
 *.parquet
 *.feather
 *.h5
 *.hdf5
 *.nc
 
-pipeline/data_cleaning/nemosis_cache/
+# Experiment outputs
+*.joblib
+reports/runs/
+tmp/pipeline-tests-*/
 
-docs/proposal/*.aux
-docs/proposal/*.fdb_latexmk
-docs/proposal/*.fls
-docs/proposal/*.log
-docs/proposal/*.bib
-docs/proposal/*.out
-docs/proposal/*.bbl
-docs/proposal/*.blg
-docs/proposal/*.xml
-docs/proposal/*.gz
-
-docs/report/*.aux
-docs/report/*.fdb_latexmk
-docs/report/*.fls
-docs/report/*.log
-docs/report/*.bib
-docs/report/*.out
-docs/report/*.bbl
-docs/report/*.blg
-docs/report/*.xml
-docs/report/*.gz
+# Editors
+.vscode/

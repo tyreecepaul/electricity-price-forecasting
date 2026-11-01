@@ -72,7 +72,7 @@ def source_fingerprint() -> str:
 def graph_source_fingerprint() -> str:
     """Fingerprint the graph-encoder code when graph features are enabled."""
     digest = hashlib.sha256()
-    layers = PROJECT_ROOT / "electricity_price_forecasting_model" / "layers" / "gnn_layers"
+    layers = PROJECT_ROOT / "src" / "layers" / "gnn_layers"
     for directory in (PROJECT_ROOT / "pipeline" / "graph_embedding", layers):
         for source in sorted(directory.glob("*.py")):
             digest.update(source.name.encode())

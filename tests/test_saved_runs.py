@@ -16,10 +16,10 @@ matplotlib.use("Agg", force=True)
 
 import main
 import pipeline.experiment_pipeline as preparation
-from electricity_price_forecasting_model.baseline_models.arima import ARIMAModel
-from electricity_price_forecasting_model.baseline_models.xgboost import XGBoostModel
-from electricity_price_forecasting_model.final_model.gru import GRUModel
-from electricity_price_forecasting_model.final_model.mlp import MLPModel
+from src.baseline_models.arima import ARIMAModel
+from src.baseline_models.xgboost import XGBoostModel
+from src.final_model.gru import GRUModel
+from src.final_model.mlp import MLPModel
 from pipeline.artifacts import create_run_directory, save_model_run
 from pipeline.contracts import price_values
 from pipeline.evaluation import evaluate

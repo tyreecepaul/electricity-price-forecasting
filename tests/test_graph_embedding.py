@@ -12,11 +12,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from electricity_price_forecasting_model.final_model.gru import GRUModel
-from electricity_price_forecasting_model.layers.gnn_layers.encoder import (
+from src.final_model.gru import GRUModel
+from src.layers.gnn_layers.encoder import (
     SpatioTemporalGraphEncoder,
 )
-from electricity_price_forecasting_model.layers.gnn_layers.graph_attention import (
+from src.layers.gnn_layers.graph_attention import (
     GraphAttentionLayer,
 )
 from pipeline.experiment_pipeline import (

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from torch import nn
-from electricity_price_forecasting_model.layers.tcn import TCNNetwork
+from src.layers.tcn import TCNNetwork
 from pipeline.neural import TorchForecastModel
 
 class TCNModel(TorchForecastModel):

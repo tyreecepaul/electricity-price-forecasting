@@ -1,6 +1,6 @@
 """Unit tests for the LSTM study.
 
-    pytest model_research/connor/test_lstm_study.py
+    pytest model_research/test_lstm_study.py
 """
 
 import json

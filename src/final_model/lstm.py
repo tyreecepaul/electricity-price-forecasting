@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from torch import nn
 
-from electricity_price_forecasting_model.final_model.gru import GRUModel
-from electricity_price_forecasting_model.layers.lstm import LSTMNetwork
+from src.final_model.gru import GRUModel
+from src.layers.lstm import LSTMNetwork
 
 
 class LSTMModel(GRUModel):

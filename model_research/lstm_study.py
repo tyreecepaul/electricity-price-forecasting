@@ -5,9 +5,9 @@ given) and follows its steps: the number of epochs is chosen on validation data,
 the model is refit on all pre-test data, and the test year is forecast once.
 Results are saved under results/lstm_study/, and finished runs are skipped.
 
-    python model_research/connor/lstm_study.py --runs lstm_2x64_dropout --seeds 42 1 2
-    python model_research/connor/lstm_study.py --summary
-    python model_research/connor/lstm_study.py --summary --compact --runs mlp lstm_original lstm_2x64_dropout
+    python model_research/lstm_study.py --runs lstm_2x64_dropout --seeds 42 1 2
+    python model_research/lstm_study.py --summary
+    python model_research/lstm_study.py --summary --compact --runs mlp lstm_original lstm_2x64_dropout
 """
 
 from __future__ import annotations
@@ -27,9 +27,9 @@ ROOT = HERE.parents[1]  # the repository root, so main.py and the pipeline are i
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from electricity_price_forecasting_model.final_model.lstm import LSTMModel  # noqa: E402
-from electricity_price_forecasting_model.final_model.mlp import MLPModel  # noqa: E402
-from electricity_price_forecasting_model.layers.lstm import LSTMNetwork  # noqa: E402
+from src.final_model.lstm import LSTMModel  # noqa: E402
+from src.final_model.mlp import MLPModel  # noqa: E402
+from src.layers.lstm import LSTMNetwork  # noqa: E402
 from main import EXPERIMENT, MODEL_REGISTRY  # noqa: E402
 from pipeline.evaluation import evaluate  # noqa: E402
 from pipeline.experiment_pipeline import (  # noqa: E402
